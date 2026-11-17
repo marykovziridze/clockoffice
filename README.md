@@ -55,7 +55,7 @@ cd clockoffice
 ./install.sh
 ```
 
-The script builds the app on your Mac, puts it in `~/Applications` and starts it. The first build takes about a minute and a half on my Mac. Then its icon appears in your menu bar.
+The script builds the app on your Mac, puts it in `~/Applications` and starts it. The first build takes under two minutes on my Mac. Then its icon appears in your menu bar.
 
 There is no download to double-click. I don't sign the app with an Apple developer certificate, so macOS would stop a ready-made copy. An app you build yourself runs.
 
