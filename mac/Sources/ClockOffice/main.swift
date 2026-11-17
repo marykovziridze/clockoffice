@@ -24,14 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         NSApp.mainMenu = Self.editMenu()
-        // Hand the Dock our icon directly: it otherwise keeps showing a cached older one after the artwork changes.
-        if let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String,
-           let url = Bundle.main.url(forResource: name, withExtension: "icns"), let icon = NSImage(contentsOf: url) {
-            NSApp.applicationIconImage = icon
-        }
+        DockIcon.handIcon()
         mainWindow = MainWindow(store: store)
         menuBar = MenuBar(store: store)
         menuBar.openMainWindow = { [weak self] in self?.mainWindow.show() }
+        menuBar.mainWindowOpen = { [weak self] in self?.mainWindow.isOpen ?? false }
         store.start()
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self else { return }
@@ -75,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// A click in the widget also brings the app forward, but says itself what to show: so this waits a moment
     /// for that link before deciding.
     func applicationDidBecomeActive(_ notification: Notification) {
+        DockIcon.keep()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             guard let self, NSApp.isActive, Date().timeIntervalSince(self.lastLinkAt) > 2,
                   self.mainWindow != nil, !self.mainWindow.exists, !self.menuBar.isOpen,
@@ -85,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// A click in the widget arrives here as a link (see WidgetLink).
     func application(_ application: NSApplication, open urls: [URL]) {
+        DockIcon.keep()
         guard let link = urls.lazy.compactMap({ WidgetLink($0) }).first else { return }
         lastLinkAt = Date()
         // Clicked while the app was not running: nothing exists yet, so remember it for the end of launch.
@@ -135,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        DockIcon.keep()
         menuBar?.hide() // one surface at a time: the Dock icon swaps the dropdown for the window
         mainWindow?.show()
         return false
@@ -190,6 +190,19 @@ enum DockIcon {
     }
     static func apply() {
         NSApp.setActivationPolicy(shown ? .regular : .accessory)
+        if shown { handIcon() } // coming back to the Dock: the Dock would otherwise show its cached older icon
+    }
+    /// Opening the running app again (Spotlight, Finder, a widget link) makes macOS give it a Dock icon even when
+    /// Show in Dock is off: put it back to the menu bar only. Nothing happens when the mode is already right.
+    static func keep() {
+        if !shown, NSApp.activationPolicy() != .accessory { NSApp.setActivationPolicy(.accessory) }
+    }
+    /// Hand the Dock our icon directly: it otherwise keeps showing a cached older one after the artwork changes.
+    static func handIcon() {
+        if let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String,
+           let url = Bundle.main.url(forResource: name, withExtension: "icns"), let icon = NSImage(contentsOf: url) {
+            NSApp.applicationIconImage = icon
+        }
     }
 }
 

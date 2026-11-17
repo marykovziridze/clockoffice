@@ -211,6 +211,14 @@ public final class SnapshotServer: @unchecked Sendable {
         params.allowLocalEndpointReuse = true
         let l = try NWListener(using: params)
         l.newConnectionHandler = { [weak self] conn in
+            guard let self else { conn.cancel(); return }
+            self.accept(conn)
+        }
+        l.start(queue: .global(qos: .utility))
+        listener = l
+    }
+
+    private func accept(_ conn: NWConnection) {
             conn.start(queue: .global(qos: .utility))
             // A request that is not complete within 5 seconds is dropped (a parked permission request is complete).
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { [weak self] in
@@ -218,13 +226,41 @@ public final class SnapshotServer: @unchecked Sendable {
                 self.lock.lock(); let keep = self.parked.contains(ObjectIdentifier(conn)); self.lock.unlock()
                 if !keep { conn.cancel() }
             }
-            self?.read(conn, Data())
-        }
-        l.start(queue: .global(qos: .utility))
-        listener = l
+            read(conn, Data())
     }
 
     public func stop() { permissions.releaseAll(); listener?.cancel(); listener = nil }
+
+    /// Starts on a port the system picks and nothing else holds, and returns it once the server listens. For tests:
+    /// `start(port:)` allows reuse, so on a port another process already held it started without an error while
+    /// the other process kept answering (T-37, verifier 1).
+    public func startOnFreePort() async throws -> UInt16 {
+        let params = NWParameters.tcp
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
+        let l = try NWListener(using: params)
+        l.newConnectionHandler = { [weak self] conn in self?.accept(conn) }
+        let port: UInt16 = try await withCheckedThrowingContinuation { cont in
+            let once = Once()
+            let finish: @Sendable (Result<UInt16, Error>) -> Void = { r in
+                guard once.first() else { return }
+                if case .failure = r { l.cancel() }
+                cont.resume(with: r)
+            }
+            // Never waits forever: a listener that is not ready within 5 seconds is given up.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { finish(.failure(NWError.posix(.ETIMEDOUT))) }
+            l.stateUpdateHandler = { state in
+                switch state {
+                case .ready: finish(l.port.map { .success($0.rawValue) } ?? .failure(NWError.posix(.EADDRNOTAVAIL)))
+                case .failed(let e): finish(.failure(e))
+                case .cancelled: finish(.failure(NWError.posix(.ECANCELED)))
+                default: break
+                }
+            }
+            l.start(queue: .global(qos: .utility))
+        }
+        listener = l
+        return port
+    }
 
     /// Reads until the headers and the announced body are in (hook payloads can be tens of kilobytes; capped at 1 MB).
     private func read(_ conn: NWConnection, _ soFar: Data) {
@@ -310,4 +346,11 @@ public final class EventLog: @unchecked Sendable {
             try? fh.write(contentsOf: data + Data("\n".utf8))
         }
     }
+}
+
+/// True the first time only, from any thread.
+private final class Once: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func first() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
 }

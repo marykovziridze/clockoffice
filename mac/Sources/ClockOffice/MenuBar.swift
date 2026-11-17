@@ -21,6 +21,8 @@ final class MenuBar: NSObject {
     private var ownClicks: Any?
     private var top: CGFloat = 0
     var openMainWindow: (() -> Void)?
+    /// Whether the main window is open where the user is (not a file picker, not on another desktop).
+    var mainWindowOpen: () -> Bool = { false }
 
     /// `visible: false` is for the test rig: the same object and the same menu, without a second icon in
     /// the real menu bar.
@@ -265,7 +267,7 @@ final class MenuBar: NSObject {
     @objc private func toggleSummaries() { store.summariesOn.toggle() }
 
     @objc private func toggleDock() {
-        let windowOpen = NSApp.windows.contains { $0.isVisible && !($0 is DropdownPanel) && $0.styleMask.contains(.titled) }
+        let windowOpen = mainWindowOpen()
         DockIcon.shown.toggle()
         // Leaving the Dock sends the app to the back; an open window comes forward again.
         if windowOpen { DispatchQueue.main.async { [weak self] in self?.openMainWindow?() } }

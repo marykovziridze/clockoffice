@@ -31,9 +31,8 @@ private func postPermission(_ port: UInt16, _ body: Data, header: Bool = true, t
 
 private func startServer() async throws -> (SnapshotServer, UInt16) {
     let server = SnapshotServer()
-    let port: UInt16 = 48_000 + UInt16.random(in: 0..<900)
-    try server.start(port: port)
-    try await Task.sleep(nanoseconds: 300_000_000)
+    let port = try await server.startOnFreePort()
+    try await waitUntilServing(port)
     return (server, port)
 }
 

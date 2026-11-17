@@ -9,6 +9,18 @@ func fixtureURL(_ name: String) -> URL {
     URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/\(name)")
 }
 
+/// Waits until a test server really answers, instead of a fixed pause. Test servers start on a port the system picks
+/// (`startOnFreePort`): random ports from fixed ranges clashed with other tests and with app copies of other
+/// sessions, and a clash started silently (T-37).
+func waitUntilServing(_ port: UInt16) async throws {
+    let url = URL(string: "http://127.0.0.1:\(port)/snapshot")!
+    for _ in 0..<200 {
+        if let (_, r) = try? await URLSession.shared.data(from: url), (r as? HTTPURLResponse)?.statusCode == 200 { return }
+        try await Task.sleep(nanoseconds: 25_000_000)
+    }
+    Issue.record("the test server on port \(port) never answered")
+}
+
 func tempDir() -> URL {
     let d = FileManager.default.temporaryDirectory.appendingPathComponent("ao-test-\(UUID().uuidString)")
     try! FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
@@ -321,10 +333,9 @@ func replyValidation(text: String, ok: Bool) {
 
 @Test func localDoorServesTheWidgetAndTakesHookPostsOnlyFromItsOwnHeader() async throws {
     let server = SnapshotServer()
-    let port: UInt16 = 47_900 + UInt16.random(in: 0..<90)
-    try server.start(port: port)
+    let port = try await server.startOnFreePort()
     defer { server.stop() }
-    try await Task.sleep(nanoseconds: 300_000_000)
+    try await waitUntilServing(port)
     let s = Session(id: "a", tool: "Claude Code", pid: 1, cwd: "/x", project: "Desktop", title: "Scan", state: .asking,
                     since: Date(timeIntervalSince1970: 1_794_830_000), question: "Deep scan?", headline: "Deep scan?")
     server.update(Snapshot.from([s], now: Date(timeIntervalSince1970: 1_794_830_600)))
@@ -505,11 +516,16 @@ func repliesTheClaudePromptWouldTreatAsCommandsAreRefused(text: String) {
 }
 
 @Test func localDoorAnswersOnlyItsExactPathsAndOnlyOnLoopback() async throws {
+    // The app's own door, `start(port:)`, on a port that was just free: this is the one test that runs it, so a
+    // change that made the app listen on every address fails here (verifier 2 of T-37).
+    let probe = SnapshotServer()
+    let port = try await probe.startOnFreePort()
+    probe.stop()
+    try await Task.sleep(nanoseconds: 100_000_000)
     let server = SnapshotServer()
-    let port: UInt16 = 48_000 + UInt16.random(in: 0..<90)
     try server.start(port: port)
     defer { server.stop() }
-    try await Task.sleep(nanoseconds: 300_000_000)
+    try await waitUntilServing(port)
     func status(_ path: String) async throws -> Int {
         ((try await URLSession.shared.data(from: URL(string: "http://127.0.0.1:\(port)\(path)")!)).1 as! HTTPURLResponse).statusCode
     }
@@ -520,6 +536,10 @@ func repliesTheClaudePromptWouldTreatAsCommandsAreRefused(text: String) {
     let listening = Shell.run("/usr/sbin/lsof", ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN"]).stdout
     #expect(listening.contains("127.0.0.1:\(port)"))
     #expect(!listening.contains("*:\(port)"))
+    // And it is this test's own server that listens there, not another process that took the port meanwhile.
+    let pid = String(ProcessInfo.processInfo.processIdentifier)
+    #expect(listening.split(separator: "\n").dropFirst().allSatisfy { $0.split(separator: " ", omittingEmptySubsequences: true).dropFirst().first.map(String.init) == pid },
+            "listeners: \(listening)")
 }
 
 @Test func invisibleCharactersFromPastedTextAreTidiedNotRefused() {
@@ -730,10 +750,9 @@ func repliesTheClaudePromptWouldTreatAsCommandsAreRefused(text: String) {
 @Test func theRelayScriptHandsTheDataToTheAppAndStillRunsTheUsersStatusLine() async throws {
     // The real script, run by the real shell, against the app's local door on a test port.
     let server = SnapshotServer()
-    let port: UInt16 = 48_000 + UInt16.random(in: 0..<90)
-    try server.start(port: port)
+    let port = try await server.startOnFreePort()
     defer { server.stop() }
-    try await Task.sleep(nanoseconds: 300_000_000)
+    try await waitUntilServing(port)
     let dir = tempDir()
     let script = dir.appendingPathComponent("relay with space.sh")
     try StatusLineRelay.script(port: port).write(to: script, atomically: true, encoding: .utf8)
@@ -756,7 +775,10 @@ func repliesTheClaudePromptWouldTreatAsCommandsAreRefused(text: String) {
     // The user's own status line gets the very same data on its stdin and its output is what Claude Code shows.
     let shown = try run("grep -o 'Fable 5.2' | head -1", report)
     #expect(shown.contains("Fable 5.2"), "the user's command ran on the same input: \(shown)")
-    try await Task.sleep(nanoseconds: 900_000_000)
+    // The relay posts in the background: wait for it (up to 5 seconds) instead of a fixed pause.
+    for _ in 0..<200 where server.usage.model(for: "live-1") == nil || server.usage.current() == nil {
+        try await Task.sleep(nanoseconds: 25_000_000)
+    }
     #expect(server.usage.current()?.sessionPercent == 85 && server.usage.current()?.weekPercent == 24)
     #expect(server.usage.model(for: "live-1") == "Fable 5.2")
     // No command of their own: the relay prints nothing and does not fail.
