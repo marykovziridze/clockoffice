@@ -773,7 +773,7 @@ extension Store {
     }
 }
 
-/// A folder's name above its sessions: quiet, on the same left edge as the rows' text.
+/// A folder's name above its sessions: quiet, on the left edge of the dials below it.
 struct FolderHeading: View {
     let name: String
     let edge: CGFloat
@@ -823,7 +823,7 @@ struct SessionList: View {
             }
             // Everything that does not ask, under its folder's name.
             ForEach(store.folders(sent + rest)) { folder in
-                if store.manyFolders { FolderHeading(name: folder.name, edge: 56) }
+                if store.manyFolders { FolderHeading(name: folder.name, edge: 15) } // 12 row padding + (32 dial column - 26 dial) / 2
                 ForEach(folder.sessions) { s in
                     QuietRow(session: s, sentText: store.sentText(s), sentAt: store.sentAt(s), selected: surface.selected == s.id,
                              grouped: true, limited: store.limited(s)) { surface.open(s.id) }

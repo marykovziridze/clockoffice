@@ -160,7 +160,7 @@ private struct WindowBody: View {
                     Rectangle().fill(theme.hair).frame(height: 1).padding(.horizontal, 12).padding(.bottom, 8)
                 }
                 ForEach(store.folders(store.sessions)) { folder in
-                    if store.manyFolders { FolderHeading(name: folder.name, edge: 50) }
+                    if store.manyFolders { FolderHeading(name: folder.name, edge: 12) } // 12 row padding; the 26 dial fills its 26 column
                     ForEach(folder.sessions) { s in
                         QuietRow(session: s, sentText: store.sentText(s), sentAt: store.sentAt(s), selected: s.id == shown?.id,
                                  lines: 2, bleed: 8, dialColumn: 26, grouped: true, limited: store.limited(s)) {
