@@ -77,17 +77,9 @@ More: [PRIVACY.md](PRIVACY.md).
 
 ## Not proven yet
 
-This is an early release (0.1.0). I built it for my own daily use.
-
-- It has run on one Mac (macOS 26.5). Not on macOS 14 or 15, and not on an Intel Mac.
-- Nobody but me has installed it.
-- The desktop widget on another Mac: the build is signed without a certificate, and I have not tested whether macOS loads such a widget everywhere.
-- It reads session files that Claude Code does not document as a stable format. A Claude Code update can break it.
-- Replying works in VS Code and its forks. In Terminal.app or iTerm you get "Show in …", which takes you to the session's window.
-- You cannot approve a permission prompt from the app yet. It shows you the prompt and takes you to it.
-- You can answer Claude Code sessions only. A Codex conversation is listed and read, never typed into.
-- Codex: I built the reader from the files the ChatGPT extension for VS Code wrote on my Mac in October. I have not yet tried it on a conversation that is running, or with the Codex app or the `codex` command.
-- Mac only. No Windows or Linux version.
+- Version 0.1.0. So far it has run on my Mac only (macOS 26.5, Apple silicon).
+- It reads Claude Code's session files, and Claude Code does not promise to keep their format. An update can break it.
+- Mac only.
 
 ## Tests
 
