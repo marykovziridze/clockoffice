@@ -85,6 +85,7 @@ final class MenuBar: NSObject {
         let frame = b?.window.map { NSStringFromRect($0.frame) } ?? "no window"
         let screen = b?.window?.screen.map { NSStringFromRect($0.frame) } ?? "no screen"
         return "status item visible=\(item.isVisible) frame=\(frame) screen=\(screen) image=\(b?.image != nil) occluded=\(b?.window?.occlusionState.contains(.visible) == false)"
+            + "\ndoor=\(store.doorProblem ?? "listening or starting")"
     }
 
     // MARK: Dropdown
@@ -233,6 +234,13 @@ final class MenuBar: NSObject {
     /// The right-click menu, built fresh each time so its ticks are current.
     func buildMenu() -> NSMenu {
         let menu = NSMenu()
+        if let problem = store.doorProblem {
+            // Said first: until it is fixed the widget, the dialog words, Allow/Deny and the usage line get nothing.
+            let p = menu.addItem(withTitle: problem, action: nil, keyEquivalent: "")
+            p.isEnabled = false
+            menu.addItem(withTitle: "Try again", action: #selector(openDoorAgain), keyEquivalent: "").target = self
+            menu.addItem(.separator())
+        }
         menu.addItem(withTitle: "Open ClockOffice", action: #selector(openWindow), keyEquivalent: "").target = self
         menu.addItem(.separator())
         let s = menu.addItem(withTitle: "Summaries in plain words", action: #selector(toggleSummaries), keyEquivalent: "")
@@ -264,6 +272,7 @@ final class MenuBar: NSObject {
     }
 
     @objc private func openWindow() { hide(); openMainWindow?() }
+    @objc private func openDoorAgain() { store.openDoorAgain() }
     @objc private func toggleSummaries() { store.summariesOn.toggle() }
 
     @objc private func toggleDock() {

@@ -216,8 +216,47 @@ public final class SnapshotServer: @unchecked Sendable {
             guard let self else { conn.cancel(); return }
             self.accept(conn)
         }
+        // Whether the door really listens. A port another program holds makes the listener fail after start()
+        // has already returned, so this is the only place the failure shows (T-41).
+        setDoor(.starting, port: port)
+        l.stateUpdateHandler = { [weak self, weak l] state in
+            guard let self else { return }
+            switch state {
+            case .ready: self.setDoor(.listening, port: port)
+            case .failed(let e):
+                self.setDoor(.failed(Self.why(e)), port: port)
+                l?.cancel()
+            case .waiting(let e): self.setDoor(.failed(Self.why(e)), port: port)
+            default: break
+            }
+        }
         l.start(queue: .global(qos: .utility))
         listener = l
+    }
+
+    /// The door's state, as the app shows it.
+    public enum Door: Equatable, Sendable {
+        case stopped, starting, listening
+        /// Not listening, with the reason in plain words.
+        case failed(String)
+    }
+    public private(set) var door: Door {
+        get { lock.lock(); defer { lock.unlock() }; return doorState }
+        set { lock.lock(); doorState = newValue; lock.unlock() }
+    }
+    private var doorState: Door = .stopped
+    public private(set) var doorPort: UInt16 = 0
+    /// Called (on a background queue) when the door's state changes.
+    public var onDoorChange: (@Sendable (Door) -> Void)?
+
+    private func setDoor(_ d: Door, port: UInt16) {
+        lock.lock(); let changed = doorState != d; doorState = d; doorPort = port; lock.unlock()
+        if changed { onDoorChange?(d) }
+    }
+
+    static func why(_ e: NWError) -> String {
+        if case .posix(let code) = e, code == .EADDRINUSE { return "another program is using its port" }
+        return "\(e)"
     }
 
     private func accept(_ conn: NWConnection) {
@@ -231,7 +270,7 @@ public final class SnapshotServer: @unchecked Sendable {
             read(conn, Data())
     }
 
-    public func stop() { permissions.releaseAll(); listener?.cancel(); listener = nil }
+    public func stop() { permissions.releaseAll(); listener?.cancel(); listener = nil; setDoor(.stopped, port: doorPort) }
 
     /// Starts on a port the system picks and nothing else holds, and returns it once the server listens. For tests:
     /// fixed ports clashed with other tests and other sessions' app copies (T-37).

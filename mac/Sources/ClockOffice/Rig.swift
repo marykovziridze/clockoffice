@@ -507,8 +507,15 @@ final class Rig {
     func listen(port: UInt16) throws {
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!)
-        params.allowLocalEndpointReuse = true
+        // No port reuse (T-42): with it a rig started silently on a port another process held, and that process got
+        // every request. A port in use now ends the rig with a message, as a failed start already did.
         let l = try NWListener(using: params)
+        l.stateUpdateHandler = { state in
+            if case .failed(let e) = state {
+                print("rig: cannot listen on \(port): \(e)")
+                exit(1)
+            }
+        }
         l.newConnectionHandler = { [weak self] conn in
             conn.start(queue: .global(qos: .userInitiated))
             conn.receive(minimumIncompleteLength: 1, maximumLength: 16384) { data, _, _, _ in

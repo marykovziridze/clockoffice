@@ -631,6 +631,29 @@ func readUntilClosed(port: UInt16, timeout: Int = 3) -> String {
     #expect(listening.contains("127.0.0.1:\(port)"))
 }
 
+@Test func theDoorSaysSoWhenItsPortIsTaken() async throws {
+    // Another program holds the port: start() returns without an error, and only the door's state can tell (T-41).
+    let holder = SnapshotServer()
+    let port = try await holder.startOnFreePort()
+    defer { holder.stop() }
+    let door = SnapshotServer()
+    try door.start(port: port)
+    defer { door.stop() }
+    for _ in 0..<100 { if case .failed = door.door { break }; try await Task.sleep(nanoseconds: 20_000_000) }
+    #expect(door.door == .failed("another program is using its port"), "state: \(door.door)")
+    // A free port: the same door says it listens.
+    let probe = SnapshotServer()
+    let free = try await probe.startOnFreePort()
+    probe.stop()
+    try await Task.sleep(nanoseconds: 100_000_000)
+    let ok = SnapshotServer()
+    try ok.start(port: free)
+    for _ in 0..<100 { if ok.door == .listening { break }; try await Task.sleep(nanoseconds: 20_000_000) }
+    #expect(ok.door == .listening)
+    ok.stop()
+    #expect(ok.door == .stopped)
+}
+
 @Test func invisibleCharactersFromPastedTextAreTidiedNotRefused() {
     // Tabs, soft hyphens and zero-width marks came in with pasted text and blocked the reply.
     #expect(Reply.compose(text: "yes\tplease", files: []) == "yes please")

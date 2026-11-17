@@ -285,9 +285,35 @@ final class Store {
     /// instead of reading the last picture again.
     func stopServing() { server.stop() }
 
+    // MARK: The local door
+
+    /// Why the app's local door is not listening, in plain words; nil while it listens (or in a test picture).
+    /// Without the door the widget, the dialog words, Allow/Deny and the usage line all get nothing (T-41).
+    private(set) var doorProblem: String?
+
+    private func openDoor() {
+        do { try server.start() } catch { takeDoor(.failed("\(error)")) }
+    }
+
+    private func takeDoor(_ door: SnapshotServer.Door) {
+        let next: String?
+        if case .failed(let why) = door { next = "The widget, dialog words and usage are off: \(why) (\(server.doorPort))." } else { next = nil }
+        if next != doorProblem { doorProblem = next }
+    }
+
+    /// The menu's "Try again": the door is opened once more on the same port.
+    func openDoorAgain() {
+        guard !fixture else { return }
+        server.stop()
+        openDoor()
+    }
+
     func start() {
         guard !fixture else { return }
-        try? server.start()
+        server.onDoorChange = { [weak self] door in
+            DispatchQueue.main.async { self?.takeDoor(door) }
+        }
+        openDoor()
         server.inbox.onChange = { [weak self] in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self?.refresh() }
         }
