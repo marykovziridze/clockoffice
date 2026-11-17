@@ -6,7 +6,7 @@ import Testing
 /// The app's own code, which the core tests cannot reach: what a conversation's text becomes on screen.
 
 private func links(_ markdown: String) -> [String] {
-    let a = Prose.styled(markdown)
+    let a = Prose.styled(markdown, links: true)
     // Letter by letter: read by whole characters, a link that an accent follows loses its last letter.
     return a.runs.compactMap { run in
         var words = String.UnicodeScalarView()
@@ -38,4 +38,15 @@ private func links(_ markdown: String) -> [String] {
     // An accent after a link is part of the text, and the link under the words before it still goes where it says.
     #expect(links("[https://good.example](https://good.example)\u{0301} and more") == ["https://good.example>good.example"])
     #expect(links("[the docs](https://docs.example)") == ["the docs>docs.example"])
+}
+
+@Test func aConversationsTextHasNoLinksForNow() {
+    // Switched off on 2026-11-17: a click on a file link did nothing in the real app. Until that is found and
+    // fixed, nothing in a message may look clickable.
+    #expect(!Prose.linksOn)
+    for text in ["see https://example.com/docs here", "[the docs](https://docs.example)", "open `/usr/bin/true` now", "/tmp is a folder"] {
+        let a = Prose.styled(text, folder: "/tmp")
+        #expect(a.runs.allSatisfy { $0.link == nil && $0.underlineStyle == nil }, "\(text)")
+    }
+    #expect(String(Prose.styled("[the docs](https://docs.example)").characters) == "the docs")
 }

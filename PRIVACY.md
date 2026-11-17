@@ -29,7 +29,7 @@ Nothing is kept anywhere else. Delete those three folders to remove everything i
 
 ## Links in a conversation
 
-A web address in a conversation opens in your browser, and only when the address its words show is the address it leads to. A file opens for viewing if it is a picture, a document or a film; any other file is opened in the session's editor or shown in the Finder. Nothing a conversation names is ever run.
+ClockOffice does not turn the text of a conversation into links: web addresses and file paths show as plain words. A picture shown under a message opens for viewing when you click it. Nothing a conversation names is ever run.
 
 ## Network
 

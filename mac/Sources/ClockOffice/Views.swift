@@ -890,15 +890,26 @@ struct Prose: View {
 
     /// Claude writes Markdown; bold and inline code are shown as such, the rest as plain text. With a session's
     /// folder given, web addresses and files that exist become links, as in common chat apps.
-    static func styled(_ text: String, folder: String? = nil) -> AttributedString {
-        let key = ((folder ?? "") + "\u{1}" + text) as NSString
+    /// Links in a conversation's text are switched off for now (2026-11-17): in the real app a click on a file or
+    /// folder link did nothing, and the cause was not found before the release. Text that looks clickable and is
+    /// not is worse than plain text, so paths and addresses show as words. Everything that makes and checks a link
+    /// (`Linker`, `link`, `tame`) is kept and tested with `links: true`.
+    static let linksOn = false
+
+    static func styled(_ text: String, folder: String? = nil, links: Bool = Prose.linksOn) -> AttributedString {
+        let key = ((folder ?? "") + "\u{1}" + (links ? "L" : "-") + text) as NSString
         // Kept for a little while only: a file Claude is about to write does not exist yet.
         if let hit = kept.object(forKey: key), Date().timeIntervalSince(hit.at) < 20 { return hit.value }
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace,
                                                               failurePolicy: .returnPartiallyParsedIfPossible)
         var a = (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
-        if let folder { link(&a, folder: folder) }
-        tame(&a)
+        if links {
+            if let folder { link(&a, folder: folder) }
+            tame(&a)
+        } else {
+            // A Markdown link keeps its words and loses its target.
+            for run in a.runs where run.link != nil { a[run.range].link = nil }
+        }
         kept.setObject(Kept(a), forKey: key)
         return a
     }
