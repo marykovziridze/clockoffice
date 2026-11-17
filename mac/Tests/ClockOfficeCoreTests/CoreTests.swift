@@ -542,6 +542,95 @@ func repliesTheClaudePromptWouldTreatAsCommandsAreRefused(text: String) {
             "listeners: \(listening)")
 }
 
+/// One HTTP request over a plain socket, read until the server closes the connection, then closed here. Gives up
+/// after `timeout` seconds without data, so a server that never closes fails the test instead of freezing the whole
+/// run (verifier 2 of T-39).
+func readUntilClosed(port: UInt16, timeout: Int = 3) -> String {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { return "" }
+    defer { close(fd) }
+    var limit = timeval(tv_sec: timeout, tv_usec: 0)
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
+    var addr = sockaddr_in()
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = port.bigEndian
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let ok = withUnsafePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    }
+    guard ok == 0 else { return "" }
+    let req = "GET /snapshot HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\nConnection: close\r\n\r\n"
+    _ = req.withCString { send(fd, $0, strlen($0), 0) }
+    var out = Data(), buf = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let n = recv(fd, &buf, buf.count, 0)
+        if n <= 0 { break }
+        out.append(contentsOf: buf[0..<n])
+    }
+    return String(data: out, encoding: .utf8) ?? ""
+}
+
+@Test func theRequestHelperGivesUpOnAServerThatNeverAnswers() throws {
+    // A listener that accepts nothing and never closes: the connection completes in its queue, then stays silent.
+    let srv = socket(AF_INET, SOCK_STREAM, 0)
+    defer { close(srv) }
+    var addr = sockaddr_in()
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_port = 0
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+    var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+    let bound = withUnsafeMutablePointer(to: &addr) { p in
+        p.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(srv, $0, len) == 0 && listen(srv, 4) == 0 && getsockname(srv, $0, &len) == 0 }
+    }
+    try #require(bound)
+    let started = Date()
+    #expect(readUntilClosed(port: UInt16(bigEndian: addr.sin_port), timeout: 1) == "")
+    #expect(Date().timeIntervalSince(started) < 3, "it gave up instead of waiting for ever")
+}
+
+@Test func theAppsDoorOpensAgainAtOnceOnTheSamePortAfterAQuit() async throws {
+    // The installer quits the app and starts the new build straight away, on the same port. The door closes each
+    // connection itself, which leaves the port in TIME_WAIT for a while; without port reuse the new app could not
+    // listen there and the widget and the hooks would find nobody (T-39).
+    let probe = SnapshotServer()
+    let port = try await probe.startOnFreePort()
+    probe.stop()
+    try await Task.sleep(nanoseconds: 100_000_000)
+    let first = SnapshotServer()
+    try first.start(port: port)
+    try await waitUntilServing(port)
+    // A plain socket that reads to the end before it closes: the door closes first, so the TIME_WAIT lands on the
+    // door's own port. (URLSession often closed its end first, leaving TIME_WAIT on its own temporary port, which
+    // can never block a restart: verifier 1 of T-39.)
+    for _ in 0..<5 { #expect(readUntilClosed(port: port).hasPrefix("HTTP/1.1 200")) }
+    first.stop()
+    // As when the app quits: the old door has stopped listening (its closed connections stay in TIME_WAIT).
+    // (A `for … where` loop does not stop when its condition turns false: it ran lsof 100 times, 10 s per run.)
+    for _ in 0..<100 {
+        if !Shell.run("/usr/sbin/lsof", ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN"]).stdout.contains("LISTEN") { break }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    // Server side only: the local address (4th column of netstat) is the door's port.
+    let waiting = Shell.run("/usr/sbin/netstat", ["-an", "-p", "tcp"]).stdout.split(separator: "\n").filter { row in
+        let f = row.split(separator: " ", omittingEmptySubsequences: true)
+        return f.count >= 6 && f[3] == "127.0.0.1.\(port)" && f[5] == "TIME_WAIT"
+    }.count
+    #expect(waiting > 0, "the case under test: the door's own port still has connections in TIME_WAIT")
+    let second = SnapshotServer()
+    try second.start(port: port)
+    defer { second.stop() }
+    let url = URL(string: "http://127.0.0.1:\(port)/snapshot")!
+    var answered = false
+    for _ in 0..<80 where !answered {
+        if let (_, r) = try? await URLSession.shared.data(from: url), (r as? HTTPURLResponse)?.statusCode == 200 { answered = true }
+        else { try await Task.sleep(nanoseconds: 25_000_000) }
+    }
+    #expect(answered, "the restarted door answers on the same port within 2 seconds")
+    let listening = Shell.run("/usr/sbin/lsof", ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN"]).stdout
+    #expect(listening.contains("127.0.0.1:\(port)"))
+}
+
 @Test func invisibleCharactersFromPastedTextAreTidiedNotRefused() {
     // Tabs, soft hyphens and zero-width marks came in with pasted text and blocked the reply.
     #expect(Reply.compose(text: "yes\tplease", files: []) == "yes please")

@@ -208,7 +208,9 @@ public final class SnapshotServer: @unchecked Sendable {
         let params = NWParameters.tcp
         // Bound to 127.0.0.1 itself, not to every address with a filter on top.
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!)
-        params.allowLocalEndpointReuse = true
+        // No port reuse (T-39): measured on macOS 26, a restart on the same port works without it while the old
+        // door's connections are still in TIME_WAIT (test theAppsDoorOpensAgainAtOnceOnTheSamePortAfterAQuit), and
+        // with it a second copy started silently on a port another process held while that process kept answering.
         let l = try NWListener(using: params)
         l.newConnectionHandler = { [weak self] conn in
             guard let self else { conn.cancel(); return }
@@ -232,8 +234,7 @@ public final class SnapshotServer: @unchecked Sendable {
     public func stop() { permissions.releaseAll(); listener?.cancel(); listener = nil }
 
     /// Starts on a port the system picks and nothing else holds, and returns it once the server listens. For tests:
-    /// `start(port:)` allows reuse, so on a port another process already held it started without an error while
-    /// the other process kept answering (T-37, verifier 1).
+    /// fixed ports clashed with other tests and other sessions' app copies (T-37).
     public func startOnFreePort() async throws -> UInt16 {
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
