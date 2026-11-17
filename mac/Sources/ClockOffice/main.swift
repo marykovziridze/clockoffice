@@ -180,6 +180,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// Whether ClockOffice has a Dock icon. Off: it lives in the menu bar only (no Dock icon, not in ⌘-Tab); the window
+/// still opens from the dropdown and the right-click menu. Kept across restarts.
+@MainActor
+enum DockIcon {
+    static var shown: Bool {
+        get { UserDefaults.standard.object(forKey: "showInDock") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "showInDock"); apply() }
+    }
+    static func apply() {
+        NSApp.setActivationPolicy(shown ? .regular : .accessory)
+    }
+}
+
 /// The keyboard, in one place for the app and for the test rig, so a test presses the very same code.
 @MainActor
 enum Keys {
@@ -279,8 +292,9 @@ MainActor.assumeIsolated {
         withExtendedLifetime(rig) { app.run() }
         exit(0)
     }
-    // A regular app: it lives in the Dock (click it for the window) as well as in the menu bar.
-    app.setActivationPolicy(.regular)
+    // By default it lives in the Dock (click it for the window) as well as in the menu bar; "Show in Dock" in the
+    // right-click menu turns the Dock icon off.
+    DockIcon.apply()
     let delegate = AppDelegate()
     app.delegate = delegate
     app.run()

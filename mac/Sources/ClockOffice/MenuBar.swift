@@ -238,6 +238,9 @@ final class MenuBar: NSObject {
         s.toolTip = "Uses a small model through your own Claude Code, inside your plan. Off: wording rules only."
         let l = menu.addItem(withTitle: "Open at login", action: #selector(toggleLogin), keyEquivalent: "")
         l.target = self; l.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        let d = menu.addItem(withTitle: "Show in Dock", action: #selector(toggleDock), keyEquivalent: "")
+        d.target = self; d.state = DockIcon.shown ? .on : .off
+        d.toolTip = "Off: ClockOffice lives in the menu bar only. Open ClockOffice above still opens the window."
         let h = menu.addItem(withTitle: "Show the words of Claude Code dialogs", action: #selector(toggleHooks), keyEquivalent: "")
         h.target = self; h.state = ClaudeHooks.isInstalled() ? .on : .off
         h.toolTip = "Adds two hook entries to ~/.claude/settings.json (a backup is kept). Off: a dialog shows as “has a question, in its window”."
@@ -260,6 +263,13 @@ final class MenuBar: NSObject {
 
     @objc private func openWindow() { hide(); openMainWindow?() }
     @objc private func toggleSummaries() { store.summariesOn.toggle() }
+
+    @objc private func toggleDock() {
+        let windowOpen = NSApp.windows.contains { $0.isVisible && !($0 is DropdownPanel) && $0.styleMask.contains(.titled) }
+        DockIcon.shown.toggle()
+        // Leaving the Dock sends the app to the back; an open window comes forward again.
+        if windowOpen { DispatchQueue.main.async { [weak self] in self?.openMainWindow?() } }
+    }
 
     @objc private func toggleHooks() {
         let on = !ClaudeHooks.isInstalled()
