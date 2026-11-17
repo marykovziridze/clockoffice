@@ -246,7 +246,7 @@ enum Keys {
         if chars == "w" { if surface.kind == .panel { hidePanel() } else { closeWindow() }; return nil }
         if chars == "o", let s = surface.target(store) { store.openWindow(s); return nil }
         if let n = Int(chars), (1...9).contains(n), let s = surface.target(store),
-           store.canReply(s), n <= s.options.count {
+           store.canReply(s), !store.canDecide(s), n <= s.options.count {
             store.answer(s, s.options[n - 1]) { ok in if ok { surface.afterSend(s.id) } }
             return nil
         }

@@ -11,22 +11,33 @@ public enum ClaudeHooks {
     static func command(_ e: Edition) -> String {
         "curl -s -m 2 -o /dev/null -H '\(marker)' -H 'content-type: application/json' --data-binary @- http://127.0.0.1:\(e.port)/hook || true"
     }
+    /// The permission hook waits for the user's Allow or Deny and prints it for Claude Code. `-f` prints nothing on an
+    /// error reply, so only a decision this app wrote can ever reach Claude Code; with the app closed it fails at once
+    /// and the terminal's dialog decides, as without the hook.
+    static func permissionCommand(_ e: Edition) -> String {
+        "curl -s -f -m \(permissionWait) -H '\(marker)' -H 'content-type: application/json' --data-binary @- http://127.0.0.1:\(e.port)/permission || true"
+    }
+    /// Seconds the permission hook waits; Claude Code's own limit for it is set a little longer.
+    static let permissionWait = 590
     /// A hook entry is this build's when it posts to this build's port. Two builds on one Mac each keep their own:
     /// told apart by the marker alone, switching the hooks on in one app took the other app's out.
     static func ours(_ command: String, _ e: Edition) -> Bool {
-        command.contains(marker) && command.contains("127.0.0.1:\(e.port)/hook")
+        command.contains(marker) && (command.contains("127.0.0.1:\(e.port)/hook") || command.contains("127.0.0.1:\(e.port)/permission"))
     }
     public static var settingsURL: URL { URL(fileURLWithPath: NSHomeDirectory() + "/.claude/settings.json") }
 
+    /// On means this build's current entries are in place. An install from before permission prompts could be
+    /// answered here (its permission hook only reported) reads as off, so one click on the switch brings it up to date.
     public static func isInstalled(at url: URL = settingsURL, edition: Edition = .current) -> Bool {
         guard let data = try? Data(contentsOf: url.resolvingSymlinksInPath()),
               let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let hooks = o["hooks"] as? [String: Any] else { return false }
-        return hooks.values.contains { list in
-            (list as? [Any] ?? []).contains { entry in
-                ((entry as? [String: Any])?["hooks"] as? [[String: Any]] ?? []).contains { ours($0["command"] as? String ?? "", edition) }
+        func has(_ event: String, _ command: String) -> Bool {
+            (hooks[event] as? [Any] ?? []).contains { entry in
+                ((entry as? [String: Any])?["hooks"] as? [[String: Any]] ?? []).contains { $0["command"] as? String == command }
             }
         }
+        return has("PreToolUse", Self.command(edition)) && has("PermissionRequest", permissionCommand(edition))
     }
 
     public enum Failure: LocalizedError, Equatable {
@@ -77,7 +88,10 @@ public enum ClaudeHooks {
             if let existing = hooks[event], !(existing is [Any]) { throw Failure.unexpectedShape }
             var list = hooks[event] as? [Any] ?? []
             if on {
-                var entry: [String: Any] = ["hooks": [["type": "command", "command": command(edition), "timeout": 3]]]
+                let waits = event == "PermissionRequest"
+                var entry: [String: Any] = ["hooks": [["type": "command",
+                                                       "command": waits ? permissionCommand(edition) : command(edition),
+                                                       "timeout": waits ? permissionWait + 10 : 3]]]
                 if let matcher { entry["matcher"] = matcher }
                 list.append(entry)
             }

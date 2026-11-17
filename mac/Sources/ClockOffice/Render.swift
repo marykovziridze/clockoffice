@@ -30,6 +30,28 @@ enum Renderer {
                                 inShort: "Added the field; asks what to do with old migrations.")
             panel("panel-codex-\(tag)", all + [codex], dark, dir, replyable: Set(all.map(\.id))) { _, _ in }
             panel("panel-codex-detail-\(tag)", all + [codex], dark, dir, replyable: Set(all.map(\.id))) { _, surface in surface.show("x") }
+            // A permission prompt held by the hook: Allow and Deny, also for a session in a plain terminal (no message
+            // box there), since the answer goes back through Claude Code's hook and not through typing.
+            let perm = Session(id: "p", tool: "Claude Code", pid: 0, cwd: NSHomeDirectory() + "/Projects/client-website",
+                               project: "Client website", title: "Cleaning the build folder", state: .asking,
+                               since: Date().addingTimeInterval(-3 * 60), certain: true, waitingFor: "permission prompt",
+                               question: "Allow Bash: rm -rf dist && npm run build?", headline: "Allow Bash: rm -rf dist && npm run build?",
+                               options: [ReplyOption(label: "Allow", send: Store.allowMark + "render"),
+                                         ReplyOption(label: "Deny", send: Store.denyMark + "render")],
+                               inShort: "Wants to clear the build folder and build again.")
+            panel("panel-permission-\(tag)", [perm] + all, dark, dir, replyable: Set(all.map(\.id))) { _, _ in }
+            panel("panel-permission-detail-\(tag)", [perm] + all, dark, dir, replyable: Set(all.map(\.id))) { _, surface in surface.show("p") }
+            panel("panel-permission-sending-\(tag)", [perm] + all, dark, dir, replyable: Set(all.map(\.id))) { store, surface in
+                surface.show("p"); store.answer(perm, perm.options[0])
+            }
+            // A command too long for the list's headline: the list offers no Allow; the session's view shows it whole.
+            var longAsk = perm
+            longAsk.question = "Allow Bash: find . -name '*.log' -mtime +30 -print0 | xargs -0 rm -f && rsync -av --delete ./dist/ deploy@staging:/var/www/site/?"
+            longAsk.headline = Words.clip(longAsk.question!, 90)
+            panel("panel-permission-long-\(tag)", [longAsk] + all, dark, dir, replyable: Set(all.map(\.id))) { _, _ in }
+            panel("panel-permission-long-detail-\(tag)", [longAsk] + all, dark, dir, replyable: Set(all.map(\.id))) { _, surface in surface.show("p") }
+            var noHook = perm; noHook.options = []
+            panel("panel-permission-nohook-\(tag)", [noHook] + all, dark, dir, replyable: Set(all.map(\.id))) { _, surface in surface.show("p") }
             // Every session in one folder: its name is said nowhere.
             panel("panel-onefolder-\(tag)", all.map { var s = $0; s.project = "ClockOffice"; return s }, dark, dir) { _, _ in }
             // No question and one folder: the list opens on a plain row, with room above it.

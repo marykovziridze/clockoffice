@@ -167,7 +167,9 @@ public final class ClaudeCodeSource: SessionSource, @unchecked Sendable {
         } else if s.waitingFor == "permission prompt", let name = toolName {
             let detail = ["command", "file_path", "url", "description", "prompt"].lazy
                 .compactMap { input[$0]?.string }.first
-            s.question = "Allow \(name)" + (detail.map { ": " + Words.clip(Redactor.redact($0), 160) } ?? "") + "?"
+            // Long enough to hold a whole command: Allow can be clicked in the app, so what it allows must be readable
+            // there in full (the list shows its short headline and offers Allow only when that is the whole of it).
+            s.question = "Allow \(name)" + (detail.map { ": " + Words.clip(Redactor.redact($0), 2000) } ?? "") + "?"
         } else if let v = Optional(Classifier.classify(last)), v.asks {
             s.question = v.question
         } else {

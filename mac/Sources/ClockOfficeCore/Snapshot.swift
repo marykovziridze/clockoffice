@@ -192,6 +192,10 @@ public final class SnapshotServer: @unchecked Sendable {
     public let inbox: HookInbox
     /// What Claude Code tells the status line (limits, models), when the status line relay is on.
     public let usage = UsageInbox()
+    /// Permission prompts waiting for Allow or Deny (their connections stay open meanwhile).
+    public let permissions = PermissionDesk()
+    /// Connections a permission request holds open: the 5-second limit does not end them.
+    private var parked = Set<ObjectIdentifier>()
 
     public init(inbox: HookInbox = HookInbox()) { self.inbox = inbox }
 
@@ -208,15 +212,19 @@ public final class SnapshotServer: @unchecked Sendable {
         let l = try NWListener(using: params)
         l.newConnectionHandler = { [weak self] conn in
             conn.start(queue: .global(qos: .utility))
-            // A request that is not complete within 5 seconds is dropped.
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { conn.cancel() }
+            // A request that is not complete within 5 seconds is dropped (a parked permission request is complete).
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { [weak self] in
+                guard let self else { conn.cancel(); return }
+                self.lock.lock(); let keep = self.parked.contains(ObjectIdentifier(conn)); self.lock.unlock()
+                if !keep { conn.cancel() }
+            }
             self?.read(conn, Data())
         }
         l.start(queue: .global(qos: .utility))
         listener = l
     }
 
-    public func stop() { listener?.cancel(); listener = nil }
+    public func stop() { permissions.releaseAll(); listener?.cancel(); listener = nil }
 
     /// Reads until the headers and the announced body are in (hook payloads can be tens of kilobytes; capped at 1 MB).
     private func read(_ conn: NWConnection, _ soFar: Data) {
@@ -253,6 +261,22 @@ public final class SnapshotServer: @unchecked Sendable {
             // A browser page cannot send this without a preflight it will not pass; the header keeps it that way.
             let fromHook = head.range(of: #"(?im)^x-clockoffice:\s*hook\s*$"#, options: .regularExpression) != nil
             status = fromHook && inbox.receive(payload) ? "200 OK" : "400 Bad Request"
+        } else if hostOK && first.hasPrefix("POST /permission ") {
+            // The same guard as /hook. The reply is held back until the user decides (PermissionDesk); the dialog's
+            // words also go to the inbox, as the plain hook's do.
+            let fromHook = head.range(of: #"(?im)^x-clockoffice:\s*hook\s*$"#, options: .regularExpression) != nil
+            if fromHook && inbox.receive(payload) {
+                lock.lock(); parked.insert(ObjectIdentifier(conn)); lock.unlock()
+                conn.stateUpdateHandler = { [weak self] state in
+                    switch state {
+                    case .cancelled, .failed:
+                        self?.lock.lock(); self?.parked.remove(ObjectIdentifier(conn)); self?.lock.unlock()
+                    default: break
+                    }
+                }
+                if permissions.park(payload, on: conn) { return }
+            }
+            status = "400 Bad Request"
         } else if hostOK && first.hasPrefix("POST /status ") {
             // The same guard as the hook: a header a web page cannot send without a preflight it will not pass.
             let fromRelay = head.range(of: #"(?im)^x-clockoffice:\s*status\s*$"#, options: .regularExpression) != nil

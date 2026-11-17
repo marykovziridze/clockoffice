@@ -59,6 +59,8 @@ final class Store {
     /// True while ⌘ is held with a surface open: the moment the shortcut hints show.
     var commandHeld = false
     @ObservationIgnored private var lastSend = Date.distantPast
+    /// This build's dialog hooks are in Claude Code's settings, in their current form (read on every look).
+    @ObservationIgnored private var hooksCurrent = false
     @ObservationIgnored private var sending: Set<String> = []
     @ObservationIgnored private var errorMeta: [String: (revision: String, at: Date)] = [:]
     @ObservationIgnored private let sources: [SessionSource]
@@ -172,9 +174,52 @@ final class Store {
     /// processes running has no window: the link only beeped there.
     func canShow(_ s: Session) -> Bool { s.tool == "Claude Code" || host(of: s) != nil || s.remoteURL != nil }
 
+    // MARK: Permission prompts
+
+    /// What an Allow or Deny choice carries instead of keys to type: the request it answers. Never typed anywhere.
+    static let allowMark = "\u{1}permission-allow:", denyMark = "\u{1}permission-deny:"
+    static func isPermission(_ o: ReplyOption) -> Bool { o.send.hasPrefix(allowMark) || o.send.hasPrefix(denyMark) }
+
+    /// A session waiting on a permission prompt that this app holds gets Allow and Deny. These need no editor
+    /// terminal: the answer goes back through Claude Code's own hook, so they work in any terminal.
+    private func withPermissionChoices(_ s: Session) -> Session {
+        guard s.tool == "Claude Code", s.state == .asking, s.waitingFor == "permission prompt",
+              let ask = server.permissions.ask(for: s.id), PermissionDesk.answerable(ask.toolName) else { return s }
+        var s = s
+        s.options = [ReplyOption(label: "Allow", send: Self.allowMark + ask.id),
+                     ReplyOption(label: "Deny", send: Self.denyMark + ask.id)]
+        return s
+    }
+
+    /// Allow and Deny are on offer for this session.
+    func canDecide(_ s: Session) -> Bool { s.options.contains(where: Self.isPermission) }
+
+    /// Answers a permission prompt through the hook that is holding it. Refused when it was answered meanwhile
+    /// (in its window, or the session moved on): nothing is decided then.
+    private func decide(_ shown: Session, _ option: ReplyOption, done: ((Bool) -> Void)?) {
+        let allow = option.send.hasPrefix(Self.allowMark)
+        let id = String(option.send.dropFirst((allow ? Self.allowMark : Self.denyMark).count))
+        guard !fixture else { markSent(shown, option.label, words: option.label, files: 0, typed: false); done?(true); return }
+        if server.permissions.decide(id, allow: allow) {
+            markSent(shown, option.label, words: option.label, files: 0, typed: false)
+            log?.write("decided", session: shown, extra: ["waited_s": Int(Date().timeIntervalSince(shown.since)), "allow": allow])
+            done?(true)
+        } else {
+            fail(shown, "Not sent: it was already answered in its own window.")
+            done?(false)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.refresh() }
+    }
+
     /// One plain line on why there is no message box for this session, and what to do about it.
     /// (A window that needs a reload is said by `ReloadNotice`, not here.)
     func whyNoReply(_ s: Session) -> String? {
+        if canDecide(s) { return nil }
+        if s.tool == "Claude Code", s.state == .asking, s.waitingFor == "permission prompt" {
+            return hooksCurrent || fixture
+                ? "Allow or deny this one in its own window."
+                : "To allow or deny from here, right-click the icon in the menu bar and switch on “Show the words of Claude Code dialogs”."
+        }
         if canReply(s) {
             // Only when the dialog offers nothing to click here; under live answers the line contradicted them.
             return s.certain && s.options.isEmpty ? "This is a dialog in its own window: pick one of its choices there." : nil
@@ -232,6 +277,9 @@ final class Store {
         try? server.start()
         server.inbox.onChange = { [weak self] in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self?.refresh() }
+        }
+        server.permissions.onChange = { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self?.refresh() }
         }
         server.usage.onChange = { [weak self] in
             DispatchQueue.main.async { self?.takeUsage() }
@@ -311,7 +359,15 @@ final class Store {
 
     private func publish(_ all: [Session]) {
         let now = Date()
-        let visible = all
+        hooksCurrent = ClaudeHooks.isInstalled()
+        let visible = all.map(withPermissionChoices)
+        // A permission request from a session this app does not list (a script's run, a helper) or that is not
+        // waiting on a permission prompt is let go of after a few seconds: its terminal, or Claude Code's own rule,
+        // decides as if the hook were not there. Held, it would stall that run for ten minutes.
+        for ask in server.permissions.all() where now.timeIntervalSince(ask.at) > 8
+            && !visible.contains(where: { $0.id == ask.sessionId && $0.waitingFor == "permission prompt" }) {
+            server.permissions.letGo(ask.id)
+        }
         // A reply has landed once the session moved on from the state the user answered. One that got no reaction in
         // 90 seconds says so: it used to turn back into the question without a word.
         let before = sent
@@ -432,6 +488,8 @@ final class Store {
         guard closing[shown.id] == nil else { done?(false); return }
         // An answer that already waited out its undo time is not a double click: it skips the 0.7-second rule.
         guard afterUndo || now.timeIntervalSince(lastSend) > 0.7, !sending.contains(shown.id) else { done?(false); return }
+        // An Allow or Deny is never typed: it goes through `decide`.
+        guard !text.hasPrefix(Self.allowMark), !text.hasPrefix(Self.denyMark) else { done?(false); return }
         let files = withAttachments ? (attachments[shown.id] ?? []) : []
         let message = Reply.compose(text: text, files: files)
         guard !message.isEmpty else { done?(false); return }
@@ -516,6 +574,7 @@ final class Store {
             guard let self, let chosen = self.pending[s.id] else { return }
             self.undo(s.id)
             guard !self.isSent(asked) else { done?(false); return }
+            if let p = chosen.first(where: Self.isPermission) { self.decide(asked, p, done: done); return }
             // The send reads the session again and compares it with the question as it stood at the first click:
             // an answer to a question that changed meanwhile is refused.
             self.send(asked, text: chosen.map(\.send).joined(separator: " + "), withAttachments: false, afterUndo: true, done: done)

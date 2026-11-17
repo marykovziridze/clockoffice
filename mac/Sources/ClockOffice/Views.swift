@@ -347,7 +347,8 @@ struct OptionRow: View {
     var body: some View {
         // The ⌘ numbers show only on the question they would answer (the row the arrow keys are on, else the one
         // that has waited longest): two questions both labelled ⌘1 did not say which.
-        let mine = surface.target(store)?.id == session.id
+        // Allow and Deny have no ⌘ number: allowing a command is a click on words the user has just read.
+        let mine = surface.target(store)?.id == session.id && !store.canDecide(session)
         Flow(spacing: 8, lineSpacing: 8) {
             ForEach(Array(session.options.enumerated()), id: \.offset) { n, o in
                 AnswerPill(title: o.label, key: mine && n < 9 ? String(n + 1) : nil,
@@ -443,7 +444,13 @@ struct AnswerArea: View {
                 Text(q).font(Theme.body).foregroundStyle(theme.ink).fixedSize(horizontal: false, vertical: true)
             }
             // A dialog (official "waiting") takes keys, not sentences: only its own numbered choices are safe to type.
-            if store.canReply(session) && !session.options.isEmpty { OptionRow(session: session) }
+            // Allow and Deny on a permission prompt go back through Claude Code's hook, so they need no editor terminal.
+            // In the list, Allow and Deny show only when the headline is the whole request: a cut-off command is
+            // opened and read in full before it can be allowed.
+            if !session.options.isEmpty && (store.canDecide(session)
+                ? (!compact || session.headline == session.question) : store.canReply(session)) {
+                OptionRow(session: session)
+            }
             if store.canReply(session) && !session.certain {
                 ReplyBox(session: session, placeholder: asking ? "Type a reply" : "Type a message", autofocus: !compact)
             } else {
