@@ -210,6 +210,7 @@ private struct ConversationPane: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
+        let sent = store.sentText(session) != nil
         VStack(alignment: .leading, spacing: 0) {
             column {
                 // The link sits on the title's line, not between the title and the state under it.
@@ -234,13 +235,25 @@ private struct ConversationPane: View {
             Rectangle().fill(theme.hair).frame(height: 1)
             column {
                 VStack(alignment: .leading, spacing: 14) {
-                    if store.sentText(session) == nil { AnswerArea(session: session) }
+                    // The message box keeps its place while a message is on its way, dimmed and resting. It used
+                    // to go the moment the user sent and come back when the session's record caught up: the
+                    // conversation above grew and shrank by the box's height each time, and jumped in one frame
+                    // (filmed in the rig, 2026-11-17, T-27).
+                    AnswerArea(session: session)
+                        .disabled(sent).opacity(sent ? 0.4 : 1)
                     SessionFooter(session: session)
                 }
             }
             .padding(.top, 16).padding(.bottom, 20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // The box dims and comes back on the app's own curve, not in a single frame.
+        .animation(Motion.reduced ? nil : Motion.push, value: sent)
+        // Resting took the caret out of the box; it comes back when the box does, so the next message can be typed
+        // at once. (When the box was taken away and put back, putting it back gave the caret: verifier, T-27.)
+        .onChange(of: sent) { _, now in
+            if !now { surface.focusRequest = session.id }
+        }
     }
 
     private func column<C: View>(@ViewBuilder _ content: () -> C) -> some View {

@@ -4,10 +4,20 @@ import Foundation
 
 // MARK: permission prompts answered from the app (T-24)
 
-private func permissionBody(_ sid: String, tool: String = "Bash") -> Data {
-    try! JSONSerialization.data(withJSONObject: ["session_id": sid, "hook_event_name": "PermissionRequest", "tool_name": tool,
-                                                 "tool_input": ["command": "touch probe.txt", "description": "Create a file"]])
+private func permissionBody(_ sid: String, tool: String = "Bash", agent: String? = nil) -> Data {
+    var o: [String: Any] = ["session_id": sid, "hook_event_name": "PermissionRequest", "tool_name": tool,
+                            "tool_input": ["command": "touch probe.txt", "description": "Create a file"]]
+    if let agent { o["agent_id"] = agent }
+    return try! JSONSerialization.data(withJSONObject: o)
 }
+
+/// Requests that stay open for seconds: the shared session allows 6 per host, and tests running side by side queued
+/// behind each other's held requests (a wait of over 5 s seen once).
+private let heldRequests: URLSession = {
+    let c = URLSessionConfiguration.ephemeral
+    c.httpMaximumConnectionsPerHost = 64
+    return URLSession(configuration: c)
+}()
 
 /// Posts like the hook does (curl) and returns what the hook would print, or nil when it got no 200.
 private func postPermission(_ port: UInt16, _ body: Data, header: Bool = true, timeout: TimeInterval = 20) async -> (Int, Data)? {
@@ -15,7 +25,7 @@ private func postPermission(_ port: UInt16, _ body: Data, header: Bool = true, t
     r.httpMethod = "POST"; r.httpBody = body
     r.setValue("application/json", forHTTPHeaderField: "content-type")
     if header { r.setValue("hook", forHTTPHeaderField: "x-clockoffice") }
-    guard let (data, resp) = try? await URLSession.shared.data(for: r) else { return nil }
+    guard let (data, resp) = try? await heldRequests.data(for: r) else { return nil }
     return ((resp as! HTTPURLResponse).statusCode, data)
 }
 
@@ -88,8 +98,9 @@ private func waitFor(_ what: () -> Bool) async throws {
     #expect(status == 200 && data.isEmpty, "an empty reply: Claude Code's own dialog decides")
 }
 
-@Test func anAnswerInTheTerminalEndsTheRequestHere() async throws {
-    // Claude Code stops the hook when the dialog is answered in its window: the connection closes.
+@Test func aHookThatGivesUpEndsTheRequestHere() async throws {
+    // curl's own limit, or the session ending, closes the connection. (An answer typed in the terminal does not:
+    // Claude Code leaves the hook running. That case is the Store's check before a click counts.)
     let (server, port) = try await startServer()
     defer { server.stop() }
     let task = Task { await postPermission(port, permissionBody("s4")) }
@@ -99,6 +110,35 @@ private func waitFor(_ what: () -> Bool) async throws {
     try await waitFor { server.permissions.ask(for: "s4") == nil }
     #expect(server.permissions.ask(for: "s4") == nil)
     #expect(!server.permissions.decide(id, allow: true), "a click after that decides nothing")
+}
+
+@Test func aNewRequestFromTheSameSessionLetsGoOfTheOldOne() async throws {
+    let (server, port) = try await startServer()
+    defer { server.stop() }
+    async let first = postPermission(port, permissionBody("s7"))
+    try await waitFor { server.permissions.ask(for: "s7") != nil }
+    let old = try #require(server.permissions.ask(for: "s7")).id
+    async let second = postPermission(port, permissionBody("s7"))
+    try await waitFor { server.permissions.ask(for: "s7")?.id != old }
+    let (_, data) = try #require(await first)
+    #expect(data.isEmpty, "the old request is let go without a decision")
+    #expect(server.permissions.all().count == 1)
+    #expect(!server.permissions.decide(old, allow: true))
+    #expect(server.permissions.decide(try #require(server.permissions.ask(for: "s7")).id, allow: false))
+    _ = await second
+}
+
+@Test func subagentsAskingInParallelKeepEachOthersRequests() async throws {
+    let (server, port) = try await startServer()
+    defer { server.stop() }
+    async let main = postPermission(port, permissionBody("s8"))
+    try await waitFor { server.permissions.all().count == 1 }
+    async let sub = postPermission(port, permissionBody("s8", agent: "agent-1"))
+    try await waitFor { server.permissions.all().count == 2 }
+    #expect(server.permissions.all().count == 2, "a subagent's request does not let go of the main agent's")
+    #expect(Set(server.permissions.all().map(\.agentId)) == [nil, "agent-1"])
+    server.permissions.releaseAll()
+    _ = await main; _ = await sub
 }
 
 @Test func permissionDoorRefusesWithoutItsHeaderOrWithAnotherShape() async throws {
@@ -166,7 +206,8 @@ func liveRequestFromARealSession() async throws {
     case "deny": note("decided \(server.permissions.decide(a.id, allow: false))")
     case "letgo": server.permissions.letGo(a.id); note("let go")
     case "wait":
-        // The terminal answers; the request must end here by itself.
+        // The terminal answers. Claude Code leaves the hook running (measured): this notes whether the request is
+        // still open, it does not expect it to close.
         for _ in 0..<600 where server.permissions.ask(for: a.sessionId) != nil { try await Task.sleep(nanoseconds: 50_000_000) }
         note("still open after terminal answer: \(server.permissions.ask(for: a.sessionId) != nil)")
     default: note("decided \(server.permissions.decide(a.id, allow: true))")

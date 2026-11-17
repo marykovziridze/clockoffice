@@ -184,7 +184,10 @@ final class Store {
     /// terminal: the answer goes back through Claude Code's own hook, so they work in any terminal.
     private func withPermissionChoices(_ s: Session) -> Session {
         guard s.tool == "Claude Code", s.state == .asking, s.waitingFor == "permission prompt",
-              let ask = server.permissions.ask(for: s.id), PermissionDesk.answerable(ask.toolName) else { return s }
+              let ask = server.permissions.ask(for: s.id), PermissionDesk.answerable(ask.toolName),
+              // Two requests open in one session (a subagent asking beside the main prompt): the words shown and the
+              // request a click would answer could differ, so both are answered in the terminal.
+              server.permissions.all().filter({ $0.sessionId == s.id }).count == 1 else { return s }
         var s = s
         s.options = [ReplyOption(label: "Allow", send: Self.allowMark + ask.id),
                      ReplyOption(label: "Deny", send: Self.denyMark + ask.id)]
@@ -200,15 +203,25 @@ final class Store {
         let allow = option.send.hasPrefix(Self.allowMark)
         let id = String(option.send.dropFirst((allow ? Self.allowMark : Self.denyMark).count))
         guard !fixture else { markSent(shown, option.label, words: option.label, files: 0, typed: false); done?(true); return }
-        if server.permissions.decide(id, allow: allow) {
-            markSent(shown, option.label, words: option.label, files: 0, typed: false)
-            log?.write("decided", session: shown, extra: ["waited_s": Int(Date().timeIntervalSince(shown.since)), "allow": allow])
-            done?(true)
-        } else {
-            fail(shown, "Not sent: it was already answered in its own window.")
-            done?(false)
+        let sources = sources
+        Task {
+            // An answer typed in the terminal does not end the hook (Claude Code 2.1.326 leaves it running: verifier 1,
+            // re-measured 2026-11-17), so an open request alone does not prove the prompt is still on screen. The
+            // session is read again now: only while it still waits on this same permission prompt does the click count.
+            let fresh = await Task.detached { Session.unique(sources.flatMap { $0.sessions() }).first { $0.id == shown.id } }.value
+            let still = fresh?.state == .asking && fresh?.waitingFor == "permission prompt"
+                && Reply.stillCurrent(shown: shown, fresh: fresh)
+            if still, self.server.permissions.decide(id, allow: allow) {
+                self.markSent(shown, option.label, words: option.label, files: 0, typed: false)
+                self.log?.write("decided", session: shown, extra: ["waited_s": Int(Date().timeIntervalSince(shown.since)), "allow": allow])
+                done?(true)
+            } else {
+                if !still { self.server.permissions.letGo(id) }
+                self.fail(shown, "Not sent: it was already answered in its own window.")
+                done?(false)
+            }
+            self.refresh()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.refresh() }
     }
 
     /// One plain line on why there is no message box for this session, and what to do about it.
@@ -429,7 +442,11 @@ final class Store {
         loaded = true
         onCount?(asking.count)
 
-        let snap = Snapshot.from(visible.filter { !isSent($0) }, now: now, answerable: replyable, runSecret: widgetSecret,
+        // The widget gets no Allow or Deny: its links can only type, and a permission is answered through the hook.
+        let snap = Snapshot.from(visible.filter { !isSent($0) }.map { s in
+            guard canDecide(s) else { return s }
+            var bare = s; bare.options = []; return bare
+        }, now: now, answerable: replyable, runSecret: widgetSecret,
                                  limited: outOfLimit)
         server.update(snap)
         if snap.asking != lastSnapshot?.asking || snap.working != lastSnapshot?.working || snap.done != lastSnapshot?.done
@@ -599,10 +616,13 @@ final class Store {
     func dropStalePending(_ list: [Session]) {
         for (id, first) in pendingFor {
             guard let now = list.first(where: { $0.id == id }), !Reply.stillCurrent(shown: first, fresh: now) else { continue }
+            let permission = pending[id]?.contains(where: Self.isPermission) ?? false
             undo(id)
-            // The true reason: a session restarted in a new process has not changed its question.
+            // The true reason: a session restarted in a new process has not changed its question, and a permission
+            // prompt that moves on while Allow or Deny waits was answered in its window (verifier 1 of T-30).
             fail(now, now.pid != first.pid ? "Not sent: the session was restarted before your answer went out."
-                                           : "Not sent: the question changed before your answer went out.")
+                      : permission ? "Not sent: it was already answered in its own window."
+                                   : "Not sent: the question changed before your answer went out.")
         }
     }
 
@@ -623,6 +643,8 @@ final class Store {
         if secret == widgetSecret, let s = session(id), isSent(s) || sending.contains(id) { done(true); return }
         guard secret == widgetSecret, let s = session(id), s.state == .asking, !isSent(s), canReply(s),
               n < s.options.count, Snapshot.mark(s.stamp) == mark else { done(false); return }
+        // A widget link never answers a permission prompt, and never cancels an Allow or Deny waiting in the app.
+        guard !canDecide(s) else { done(false); return }
         // An answer still waiting out its undo time in the app makes way: one question, one answer.
         undo(id)
         send(s, text: s.options[n].send, withAttachments: false, done: done)

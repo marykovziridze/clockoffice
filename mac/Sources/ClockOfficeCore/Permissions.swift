@@ -7,7 +7,9 @@ import Network
 /// on, that hook posts the request to this app and waits for the reply on the same connection. While it waits, the
 /// dialog is on screen in the terminal as always (measured on Claude Code 2.1.326, 2026-11-17):
 /// - a click on Allow or Deny here becomes the hook's decision, and Claude Code closes its dialog;
-/// - an answer typed in the terminal ends the hook (Claude Code stops it), and the connection closes;
+/// - an answer typed in the terminal does NOT end the hook: it keeps waiting (verifier 1, re-measured 2026-11-17).
+///   So the app checks the session is still waiting on this prompt before a click counts, and lets go of a request
+///   once its session has moved on (Store) or a newer request arrives from the same session (below);
 /// - with the app closed or quitting, the hook gets no decision and the terminal dialog decides.
 /// So nothing is ever decided without a click, and the terminal stays a full way to answer.
 /// Docs: code.claude.com/docs/en/hooks#permissionrequest (read 2026-11-17).
@@ -17,6 +19,8 @@ public final class PermissionDesk: @unchecked Sendable {
         public var id: String
         public var sessionId: String
         public var toolName: String
+        /// The subagent that asks, when it is one (Claude Code's `agent_id`); nil for the session's main agent.
+        public var agentId: String?
         public var at: Date
     }
 
@@ -38,9 +42,17 @@ public final class PermissionDesk: @unchecked Sendable {
     func park(_ body: Data, on conn: NWConnection) -> Bool {
         guard let o = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
               let sid = o["session_id"] as? String, let tool = o["tool_name"] as? String else { return false }
-        let ask = Ask(id: UUID().uuidString, sessionId: sid, toolName: tool, at: Date())
-        lock.lock(); open[ask.id] = Open(ask: ask, conn: conn); lock.unlock()
-        // The hook sends nothing more; the read ends when Claude Code stops it (answered in the terminal) or it gives up.
+        let agent = o["agent_id"] as? String
+        let ask = Ask(id: UUID().uuidString, sessionId: sid, toolName: tool, agentId: agent, at: Date())
+        // One agent asks one permission at a time: its older request was answered in the terminal. Subagents of the
+        // same session ask in parallel under the same session_id (verifier 1 of T-30, measured), so only the same
+        // agent's older request is let go.
+        lock.lock()
+        let older = open.values.filter { $0.ask.sessionId == sid && $0.ask.agentId == agent }.map(\.ask.id)
+        open[ask.id] = Open(ask: ask, conn: conn)
+        lock.unlock()
+        older.forEach(release)
+        // The hook sends nothing more; the read ends when curl gives up or its session ends.
         watch(ask.id, conn)
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + holdFor) { [weak self] in self?.release(ask.id) }
         onChange?()
