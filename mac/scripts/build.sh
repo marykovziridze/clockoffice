@@ -2,13 +2,25 @@
 # Builds "ClockOffice.app" (menu-bar app + desktop widget) with the command-line Swift tools; no Xcode needed.
 #   scripts/build.sh            build into mac/build/
 #   scripts/build.sh --install  also copy to ~/Applications and (re)start it
-# Signing: ad-hoc by default (fine on this Mac). Set CLOCKOFFICE_SIGN="Apple Development: …" to use a certificate.
+# Signing. macOS ties a permission the user gave (for example "access files in your Desktop folder") to the app's
+# signature. An ad-hoc signature changes with every build, so each rebuild asked again; a certificate keeps it.
+# Which signature, first that applies:
+#   CLOCKOFFICE_SIGN="<certificate name or SHA-1>"     for one build
+#   ~/.config/clockoffice/sign holding the same          for every build on this Mac (never in the repository)
+#   ad-hoc ("-"): works, but a permission is asked again after each rebuild
+# A certificate is never picked from the keychain on its own: codesign may then stop on a keychain password dialog,
+# and the keychain can hold certificates of a team that is not yours.
 #
 # A private look: when Resources/look/look.json is there, its pictures replace the dial and the build gets an
 # identity of its own (a name on disk, an ID, a link scheme, a port), so it can sit beside the standard app.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-SIGN="${CLOCKOFFICE_SIGN:--}"
+SIGN="${CLOCKOFFICE_SIGN:-}"
+if [ -z "$SIGN" ] && [ -s "$HOME/.config/clockoffice/sign" ]; then SIGN="$(head -n 1 "$HOME/.config/clockoffice/sign")"; fi
+if [ "${SIGN:--}" = "-" ]; then
+  echo "note: signing ad-hoc, so macOS asks again for permissions after each rebuild. To keep them, put the SHA-1 of your own certificate in ~/.config/clockoffice/sign (see: security find-identity -v -p codesigning)." >&2
+fi
+SIGN="${SIGN:--}"
 VERSION="0.1.0"
 LOOK="Resources/look"
 # The file is checked by the same rules the app reads it by (Edition.read): a look that is only half understood
