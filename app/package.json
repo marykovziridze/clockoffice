@@ -1,0 +1,16 @@
+{
+  "name": "clockoffice-extension-build",
+  "private": true,
+  "description": "Builds and tests the ClockOffice editor extension (app/extension).",
+  "scripts": {
+    "test:ext": "node -e \"require('fs').rmSync('extension/out',{recursive:true,force:true})\" && tsc -p extension/tsconfig.json && node extension/test/run.mjs"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^26.6.5",
+    "@types/vscode": "1.90",
+    "@vscode/test-electron": "^3.1.0",
+    "mocha": "^12.0.3",
+    "typescript": "^5.9.3"
+  }
+}

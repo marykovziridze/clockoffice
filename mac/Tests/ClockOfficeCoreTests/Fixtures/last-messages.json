@@ -1,0 +1,11 @@
+[
+  {"text": "Built and pushed. Merge to main now, or wait for your look?", "k": "ask", "q": "Merge to main now, or wait for your look?", "opts": ["merge", "wait"]},
+  {"text": "Two headlines are on the preview.\n\nWhich one do you want?\n1. Quiet weeks in the hills\n2. Winter at the farm", "k": "ask", "opts": ["1", "2"]},
+  {"text": "Options:\n(a) keep the old footer\n(b) ship the new one\n\nPick one and I'll apply it.", "k": "ask", "opts": ["a", "b"]},
+  {"text": "Shall I continue with the next 3 pages?", "k": "ask", "opts": ["yes", "no"]},
+  {"text": "All 14 images swapped and deployed to the preview. Nothing else is open.", "k": "done"},
+  {"text": "Should I use the cache? I checked: yes, it's safe, so I used it.\n\nDone: build passes, 39 pages checked.", "k": "done"},
+  {"text": "Here is the fix:\n```js\nif (x) { return y?.z; }\n```\nTests pass. Committed as 3ae6e2a.", "k": "done"},
+  {"text": "Ready for your go to send the test batch (12 addresses). Let me know.", "k": "ask"},
+  {"text": "", "k": "done"}
+]

@@ -1,0 +1,21 @@
+{
+  "name": "clockoffice-terminal",
+  "displayName": "ClockOffice terminal bridge",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "publisher": "clockoffice",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {},
+  "description": "Lets the ClockOffice menu-bar app type your reply into the exact terminal of a coding session, and bring that terminal forward. Listens on this Mac only.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/marykovziridze/clockoffice"
+  }
+}
