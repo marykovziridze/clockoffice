@@ -152,6 +152,18 @@ public enum StatusLineRelay {
             || e.oldRelays.contains(name)
     }
 
+    /// Whether a script is a relay of this app, of any build. A script that can be read is one when it does what
+    /// a relay does: it hands the data to an address on this Mac under the app's header. Its file name does not
+    /// matter then, so a build sees its own relay behind another build's, whatever that one is called (verifier
+    /// 20: behind a relay with a name it did not know, the standard build no longer found its own). A script that
+    /// is gone or cannot be read is judged by its name alone: the names this app gives, and a look's earlier ones.
+    static func isRelay(script: String, _ e: Edition = .current) -> Bool {
+        if let text = try? String(contentsOfFile: script, encoding: .utf8) {
+            return text.contains("-H 'x-clockoffice: status'") && text.contains("http://127.0.0.1:")
+        }
+        return isRelayName((script as NSString).lastPathComponent, e)
+    }
+
     /// A command that is nothing but words in single quotes with one space between them, as `wrap` writes it →
     /// those words. Nil for anything else.
     static func quotedWords(_ command: String) -> [String]? {
@@ -182,7 +194,7 @@ public enum StatusLineRelay {
     static func peel(_ command: String, _ e: Edition = .current) -> (script: String, inner: String?)? {
         // The app always writes the script's full path; a bare name is somebody's own command.
         guard let words = quotedWords(command), words.count == 2, words[0].hasPrefix("/"),
-              isRelayName((words[0] as NSString).lastPathComponent, e) else { return nil }
+              isRelay(script: words[0], e) else { return nil }
         let inner = words[1].isEmpty ? nil : words[1]
         guard wrap(inner, scriptPath: words[0]) == command else { return nil }
         return (words[0], inner)

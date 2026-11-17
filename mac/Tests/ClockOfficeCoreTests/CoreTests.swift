@@ -1634,3 +1634,36 @@ func procStart(_ d: Date) -> String {
     // A bare script name is somebody's own command, also when it is called like the app's.
     #expect(StatusLineRelay.peel("'clockoffice-statusline.sh' 'x'") == nil)
 }
+
+@Test func aBuildFindsItsOwnRelayBehindOneWithANameItDoesNotKnow() throws {
+    // Verifier 20, 2026-11-17: with a look's old-named relay in FRONT of the standard build's, the standard build
+    // read its own menu item as off and a click added a second copy of its relay.
+    let dir = tempDir()
+    let settings = dir.appendingPathComponent("settings.json")
+    let a = Edition(), b = Edition(suffix: "studio", port: 47999, oldRelays: ["old-name-statusline.sh"])
+    let old = dir.appendingPathComponent("Old Name/old-name-statusline.sh")
+    let mine = dir.appendingPathComponent(a.folder).appendingPathComponent("clockoffice-statusline.sh")
+    for u in [old, mine] { try FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true) }
+    try StatusLineRelay.script(port: b.port).write(to: old, atomically: true, encoding: .utf8)
+    try StatusLineRelay.script(port: a.port).write(to: mine, atomically: true, encoding: .utf8)
+    let chain = StatusLineRelay.rebuild([old.path, mine.path], "mine --x")!
+    try JSONSerialization.data(withJSONObject: ["statusLine": ["type": "command", "command": chain, "refreshInterval": 10]]).write(to: settings)
+    func line() throws -> [String: Any] {
+        (try JSONSerialization.jsonObject(with: Data(contentsOf: settings)) as! [String: Any])["statusLine"] as! [String: Any]
+    }
+    #expect(StatusLineRelay.isInstalled(at: settings, edition: a) && StatusLineRelay.isInstalled(at: settings, edition: b))
+    // On again: still one copy of each, in the same order.
+    try StatusLineRelay.set(true, at: settings, scriptDirectory: mine.deletingLastPathComponent(), backups: dir.appendingPathComponent("bk"), edition: a)
+    #expect(try line()["command"] as? String == chain)
+    // Off: the standard build's goes, the other one and the user's command stay, and so does the user's own interval.
+    try StatusLineRelay.set(false, at: settings, scriptDirectory: mine.deletingLastPathComponent(), backups: dir.appendingPathComponent("bk"), edition: a)
+    let after = try line()
+    #expect(after["command"] as? String == StatusLineRelay.wrap("mine --x", scriptPath: old.path))
+    #expect((after["refreshInterval"] as? NSNumber)?.intValue == 10)
+    #expect(!StatusLineRelay.isInstalled(at: settings, edition: a) && StatusLineRelay.isInstalled(at: settings, edition: b))
+    // A script of the user's own with one of the app's names, which does not do what a relay does, is theirs.
+    let theirs = dir.appendingPathComponent("bin/clockoffice-statusline.sh")
+    try FileManager.default.createDirectory(at: theirs.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try "#!/bin/sh\necho \"$1\"\n".write(to: theirs, atomically: true, encoding: .utf8)
+    #expect(StatusLineRelay.peel(StatusLineRelay.wrap("one", scriptPath: theirs.path)) == nil)
+}

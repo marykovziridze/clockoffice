@@ -80,14 +80,15 @@ macOS decides how often a widget may refresh, so it says "as of 10:42". For the 
 ## Remove it
 In this order, because the first step needs the app:
 1. In the app's menu (right-click the icon in the menu bar) switch off "Show usage and model" and "Show the words
-   of Claude Code dialogs", and "Open at login" if it is on. That puts `~/.claude/settings.json` back as it was;
-   a backup from before each change is in `~/Library/Application Support/ClockOffice/settings-backups/`.
+   of Claude Code dialogs", and "Open at login" if it is on. That takes the app's entries out of `~/.claude/settings.json` again
+   (the file is rewritten with its keys in alphabetical order); a copy from before each change is in
+   `~/Library/Application Support/ClockOffice/settings-backups/`.
 2. Quit from the same menu and delete `~/Applications/ClockOffice.app`. Remove the desktop widget if you added it.
 3. Uninstall the extension in every editor where you set up replying: in its Extensions panel find "ClockOffice",
    then Uninstall. For VS Code the command is `code --uninstall-extension clockoffice.clockoffice-terminal`.
 4. Delete the three folders listed under "Files it keeps".
 
 If the app is already gone and your Claude Code status line shows "No such file or directory": open
-`~/.claude/settings.json`. `statusLine.command` reads `'<path to the relay script>' '<your own command>'`; put your
-own command back in its place (inside it, `'\''` stands for one `'`). With no command of your own, delete the
-`statusLine` entry.
+`~/.claude/settings.json`. `statusLine.command` reads `'<path to the relay script>' '<your own command>'`; with two
+builds of the app installed there are two such scripts, one inside the other. Replace the whole value with your own
+command, or delete the `statusLine` entry if you had none.
