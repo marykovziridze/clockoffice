@@ -48,7 +48,12 @@ No Xcode needed, only the command-line tools (`xcode-select --install`).
     cd app && npm install && npm run test:ext   # extension tests, in an isolated copy of VS Code
     "…/ClockOffice.app/Contents/MacOS/ClockOffice" --render /tmp/shots   # every surface as PNG, with sample sessions
 
-`CLOCKOFFICE_SIGN="Apple Development: …"` signs with a certificate instead of ad-hoc.
+Builds are signed ad-hoc by default. macOS ties a permission you give the app (for example access to your Desktop
+folder) to its signature, and an ad-hoc signature changes with every build, so after a rebuild macOS asks again. To
+keep the permissions, sign with your own Apple Development certificate: find its SHA-1 with
+`security find-identity -v -p codesigning` and put it on the first line of `~/.config/clockoffice/sign`
+(`CLOCKOFFICE_SIGN="<SHA-1 or name>"` does the same for one build). A certificate that is no longer valid is
+skipped with a note, and the build signs ad-hoc.
 
 A build can carry a look of its own: a folder `Resources/look` with a picture for the mark (`mark.png`, and
 `spin.png` for it turning), a menu-bar glyph, an icon and a small settings file `look.json` (a name part, a port,

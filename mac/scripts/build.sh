@@ -17,6 +17,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 SIGN="${CLOCKOFFICE_SIGN:-}"
 if [ -z "$SIGN" ] && [ -s "$HOME/.config/clockoffice/sign" ]; then SIGN="$(head -n 1 "$HOME/.config/clockoffice/sign")"; fi
+# A named certificate that is not a valid one (revoked, expired, removed) is not used: codesign would otherwise stop
+# on a keychain dialog or fail. The check only reads the list of valid signing identities; it never uses a key.
+if [ -n "$SIGN" ] && [ "$SIGN" != "-" ]; then
+  if ! security find-identity -v -p codesigning 2>/dev/null | grep -v CSSMERR | grep -qF -- "$SIGN"; then
+    echo "note: the certificate named for signing is not a valid signing identity in your keychain (revoked, expired or gone); signing ad-hoc instead." >&2
+    SIGN="-"
+  fi
+fi
 if [ "${SIGN:--}" = "-" ]; then
   echo "note: signing ad-hoc, so macOS asks again for permissions after each rebuild. To keep them, put the SHA-1 of your own certificate in ~/.config/clockoffice/sign (see: security find-identity -v -p codesigning)." >&2
 fi
