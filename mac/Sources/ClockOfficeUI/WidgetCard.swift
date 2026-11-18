@@ -34,7 +34,9 @@ public struct WidgetCard: View {
             }
             return (shown, min(snapshot.quiet.count, max(0, Int((room - used) / 46))))
         }
-        let room: CGFloat = size == .large ? 276 : 109
+        // The large size gives the usage line at the foot a line of its own (18 with the gap above it). The medium
+        // size has room for one question and one row: there the usage line never costs a row (see `footer`).
+        let room: CGFloat = size == .large ? 276 - (usageText != nil ? 18 : 0) : 109
         let all = fit(room)
         let hidden = (snapshot.asking.count - all.questions) + (max(snapshot.quiet.count, snapshot.working + snapshot.done) - all.quiet)
         // The closing line ("+3 more sessions") needs room of its own: without it the line was squeezed between
@@ -149,17 +151,65 @@ public struct WidgetCard: View {
                 }
             }
             Spacer(minLength: 4)
-            // A closing line only for what is not shown above; it never repeats the rows.
-            if hiddenQuestions > 0 || hiddenQuiet > 0 {
-                HStack {
-                    if hiddenQuiet > 0 { Text("+\(hiddenQuiet) more session\(hiddenQuiet == 1 ? "" : "s")").foregroundStyle(theme.sub) }
-                    Spacer()
-                    if hiddenQuestions > 0 {
-                        Text("+\(hiddenQuestions) more question\(hiddenQuestions == 1 ? "" : "s")").foregroundStyle(theme.accent).fontWeight(.semibold)
-                    }
+            footer(hiddenQuestions: hiddenQuestions, hiddenQuiet: hiddenQuiet)
+        }
+    }
+
+    /// The closing line, only for what is not shown above (it never repeats the rows), and the plan's usage in the
+    /// dropdown foot's own quiet words ("62% used · resets 17:01 · week 24%"). The large size has a line for each.
+    /// The medium size never gives up a row for the usage: it sits beside "+3 more sessions" when both fit, on
+    /// its own when nothing else closes the card, and is left out when more questions are waiting.
+    @ViewBuilder private func footer(hiddenQuestions: Int, hiddenQuiet: Int) -> some View {
+        let more = hiddenQuiet > 0 ? Text("+\(hiddenQuiet) more session\(hiddenQuiet == 1 ? "" : "s")").foregroundStyle(theme.sub) : nil
+        let questions = hiddenQuestions > 0
+            ? Text("+\(hiddenQuestions) more question\(hiddenQuestions == 1 ? "" : "s")").foregroundStyle(theme.accent).fontWeight(.semibold) : nil
+        let usage = usageText.map { $0.foregroundStyle(theme.sub).monospacedDigit() }
+        Group {
+            if size == .large || usage == nil || questions != nil {
+                if more != nil || questions != nil {
+                    HStack { if let more { more }; Spacer(); if let questions { questions } }
                 }
-                .font(Theme.small)
+                if size == .large, let usage { usage.lineLimit(1).padding(.top, 4) }
+            } else if let usage {
+                if let more {
+                    ViewThatFits(in: .horizontal) {
+                        HStack { more; Spacer(minLength: 12); usage.lineLimit(1).fixedSize() }
+                        // Short of room: the session part only ("62% used · resets 17:01").
+                        if let session = usageText(sessionOnly: true)?.foregroundStyle(theme.sub).monospacedDigit() {
+                            HStack { more; Spacer(minLength: 12); session.lineLimit(1).fixedSize() }
+                        }
+                        more.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    usage.lineLimit(1)
+                }
             }
+        }
+        .font(Theme.small)
+    }
+
+    /// The usage line, nil until Claude Code has reported (or once both windows have reset). A number of 80% or
+    /// more is in ink, a used-up one in the limit's red, as in the dropdown.
+    private var usageText: Text? { usageText(sessionOnly: false) }
+
+    private func usageText(sessionOnly: Bool) -> Text? {
+        guard snapshot.live else { return nil }
+        var p = UsageWords.short(snapshot.usage, now: now)
+        if sessionOnly { guard p.session != nil else { return nil }; p.week = nil }
+        func part(_ x: (percent: Double, text: String)) -> Text {
+            let high = UsageWords.isHigh(x.percent)
+            guard high else { return Text(x.text) }
+            // Only the number takes the colour: "62%" in "62% used · resets 17:01", "24%" in "week 24%".
+            let n = "\(Int(x.percent.rounded()))%"
+            let r = x.text.range(of: n)!
+            let number = Text(n).foregroundStyle(x.percent >= 99.5 ? theme.limitText : theme.ink).fontWeight(.medium)
+            return Text("\(Text(String(x.text[..<r.lowerBound])))\(number)\(Text(String(x.text[r.upperBound...])))")
+        }
+        switch (p.session, p.week) {
+        case let (s?, w?): return Text("\(part(s)) · \(part(w))")
+        case let (s?, nil): return part(s)
+        case let (nil, w?): return part(w)
+        default: return nil
         }
     }
 

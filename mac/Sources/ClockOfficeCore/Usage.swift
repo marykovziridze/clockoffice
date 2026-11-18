@@ -2,7 +2,7 @@ import Foundation
 
 /// How much of the plan's limits is used, as Claude Code itself reports it: the 5-hour session window and the
 /// 7-day window, each with the moment it starts again. One picture for the whole account, not per session.
-public struct UsageLimits: Equatable, Sendable {
+public struct UsageLimits: Equatable, Sendable, Codable {
     public var sessionPercent: Double?
     public var sessionResets: Date?
     public var weekPercent: Double?
@@ -107,6 +107,19 @@ public enum UsageWords {
 
     /// A limit this full is worth full ink instead of quiet grey.
     public static func isHigh(_ percent: Double?) -> Bool { (percent ?? 0) >= 80 }
+
+    /// The dropdown's one quiet line, in parts: "62% used · resets 17:01" and "week 24%". A part is nil when that
+    /// window was not reported or its reset time has passed; both nil when there is nothing to say.
+    public static func short(_ u: UsageLimits?, now: Date = Date(), calendar: Calendar = .current)
+        -> (session: (percent: Double, text: String)?, week: (percent: Double, text: String)?) {
+        guard let u else { return (nil, nil) }
+        func live(_ p: Double?, _ r: Date?) -> Double? { guard let p, r.map({ $0 > now }) ?? true else { return nil }; return p }
+        let session = live(u.sessionPercent, u.sessionResets).map { p in
+            (p, "\(Int(p.rounded()))% used" + (u.sessionResets.map { " · resets " + when($0, now: now, calendar: calendar) } ?? ""))
+        }
+        let week = live(u.weekPercent, u.weekResets).map { p in (p, "week \(Int(p.rounded()))%") }
+        return (session, week)
+    }
 }
 
 /// The relay that lets the app see what Claude Code tells the status line. It stands in front of the user's own status

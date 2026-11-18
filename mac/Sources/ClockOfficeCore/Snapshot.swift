@@ -58,11 +58,22 @@ public struct Snapshot: Codable, Equatable, Sendable {
     /// True while the plan's limit is used up: sessions that were working are stopped by it, and the widget must
     /// not go on calling them "working".
     public var limited: Bool
+    /// The plan's usage as Claude Code last reported it, for the widget's quiet usage line. Nil until reported
+    /// (and in data from an app older than this field).
+    public var usage: UsageLimits?
 
     public init(asOf: Date, asking: [Item], quiet: [Quiet] = [], working: Int, done: Int, live: Bool = true,
-                runSecret: String = "", limited: Bool = false) {
+                runSecret: String = "", limited: Bool = false, usage: UsageLimits? = nil) {
         self.asOf = asOf; self.asking = asking; self.quiet = quiet
         self.working = working; self.done = done; self.live = live; self.runSecret = runSecret; self.limited = limited
+        self.usage = usage
+    }
+
+    /// What the widget's usage line says at this snapshot's time: the app reloads the widget when this changes.
+    public var usageLine: String? {
+        let p = UsageWords.short(usage, now: asOf)
+        let parts = [p.session?.text, p.week?.text].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// The fingerprint an answer link carries: 12 hex characters of the session's stamp.
@@ -76,7 +87,7 @@ public struct Snapshot: Codable, Equatable, Sendable {
 
     /// `answerable`: the sessions the app can type into right now; only their questions carry one-click answers.
     public static func from(_ sessions: [Session], now: Date = Date(), answerable: Set<String> = [], runSecret: String = "",
-                            limited: Bool = false) -> Snapshot {
+                            limited: Bool = false, usage: UsageLimits? = nil) -> Snapshot {
         let asking = sessions.filter { $0.state == .asking }.sorted { $0.since < $1.since }
         return Snapshot(
             asOf: now,
@@ -92,7 +103,7 @@ public struct Snapshot: Codable, Equatable, Sendable {
                              stopped: limited && $0.state == .working && $0.tool == "Claude Code") },
             working: sessions.filter { $0.state == .working }.count,
             done: sessions.filter { $0.state == .done }.count,
-            runSecret: runSecret, limited: limited)
+            runSecret: runSecret, limited: limited, usage: usage)
     }
 
     public static let encoder: JSONEncoder = { let e = JSONEncoder(); e.dateEncodingStrategy = .millisecondsSince1970; return e }()

@@ -473,10 +473,10 @@ final class Store {
             guard canDecide(s) else { return s }
             var bare = s; bare.options = []; return bare
         }, now: now, answerable: replyable, runSecret: widgetSecret,
-                                 limited: outOfLimit)
+                                 limited: outOfLimit, usage: usage)
         server.update(snap)
         if snap.asking != lastSnapshot?.asking || snap.working != lastSnapshot?.working || snap.done != lastSnapshot?.done
-            || snap.limited != lastSnapshot?.limited {
+            || snap.limited != lastSnapshot?.limited || snap.usageLine != lastSnapshot?.usageLine {
             lastSnapshot = snap
             WidgetCenter.shared.reloadAllTimelines()
         }
