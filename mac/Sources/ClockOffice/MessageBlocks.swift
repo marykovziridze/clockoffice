@@ -24,6 +24,10 @@ struct MessageBlock: Equatable {
         /// after a blank line inside the item stays in this text.
         var text: String
         var children: [ListItem] = []
+        /// Its own text goes on after its nested items (a code block or a line written below them), so the item
+        /// ends on its own words, not on its last nested item. (Text and nested items are kept apart, so without
+        /// this the order was lost: T-44.)
+        var endsOnOwnText = false
         var ordered: Bool { number != nil }
     }
 
@@ -269,7 +273,11 @@ enum MessageBlocks {
                 while stack.count > level {
                     var done = stack.removeLast()
                     while done.item.text.hasSuffix("\n") { done.item.text.removeLast() }
-                    if stack.isEmpty { roots.append(done.item) } else { stack[stack.count - 1].item.children.append(done.item) }
+                    if stack.isEmpty { roots.append(done.item) } else {
+                        stack[stack.count - 1].item.children.append(done.item)
+                        // A nested item after the parent's own text: the parent ends on its nested items again.
+                        stack[stack.count - 1].item.endsOnOwnText = false
+                    }
                 }
             }
             var prevBlank = false
@@ -290,6 +298,7 @@ enum MessageBlocks {
                         while at > 0, r.indent < stack[at].contentIndent { at -= 1 }
                     }
                     close(downTo: at + 1)
+                    if !stack[at].item.children.isEmpty { stack[at].item.endsOnOwnText = true }
                     stack[at].item.text += "\n" + unindent(r.text, by: stack[at].contentIndent)
                 }
             }

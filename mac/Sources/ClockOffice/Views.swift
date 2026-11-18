@@ -259,7 +259,6 @@ struct ReplyBox: View {
                 .accessibilityLabel("Attach a file")
                 TextField("", text: Binding(get: { store.drafts[session.id] ?? "" },
                                             set: { store.drafts[session.id] = $0; store.clearError(session.id) }),
-                          prompt: Text(targeted ? "Drop to attach" : placeholder).font(Theme.body).foregroundStyle(theme.sub),
                           axis: .vertical)
                     .lineLimit(1...8)
                     .fixedSize(horizontal: false, vertical: true)
@@ -268,6 +267,14 @@ struct ReplyBox: View {
                     .foregroundStyle(theme.ink)
                     .focused($focused)
                     .onSubmit(send)
+                    // Our own placeholder in the app's grey: the field drew its prompt in the system's placeholder
+                    // grey whatever colour was asked for, 3.06:1 on the box in light mode (T-45).
+                    .background(alignment: .topLeading) {
+                        if draft.isEmpty {
+                            Text(targeted ? "Drop to attach" : placeholder).font(Theme.body).foregroundStyle(theme.subHover)
+                                .lineLimit(1).allowsHitTesting(false).accessibilityHidden(true)
+                        }
+                    }
                     // 6 above and below an 18-high line makes the 30 of the buttons beside it: the text is centred
                     // on them when there is one line, and has the same room at the top and the bottom when there
                     // are several.
@@ -383,7 +390,7 @@ struct AnswerPill: View {
             HStack(spacing: 6) {
                 Text(title).fontWeight(.semibold).foregroundStyle(chosen ? theme.panel : theme.ink).lineLimit(1)
                 if let key, store.commandHeld {
-                    Text("⌘" + key).foregroundStyle(chosen ? theme.panel.opacity(0.7) : theme.sub).monospacedDigit().transition(.opacity)
+                    Text("⌘" + key).foregroundStyle(chosen ? theme.panel.opacity(0.7) : (hover ? theme.ink : theme.subHover)).monospacedDigit().transition(.opacity)
                 }
             }
             .font(Theme.small)
@@ -432,7 +439,7 @@ struct AnswerArea: View {
             // and 35 below.
             HStack(alignment: .center, spacing: 10) {
                 Text("Sending " + chosen.map { "“\($0.label)”" }.joined(separator: " + ") + "…")
-                    .font(Theme.small).foregroundStyle(theme.sub).lineLimit(2)
+                    .font(Theme.small).foregroundStyle(theme.subHover).lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
                 LinkButton("Undo") { Undone.mark(session.id); store.undo(session.id) }
@@ -830,11 +837,11 @@ struct QuestionRow: View {
                     VStack(alignment: .leading, spacing: 10) {
                         if showsChoices { OptionRow(session: session).disabled(true).opacity(0.4) }
                         HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(theme.sub)
+                            Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(theme.subHover)
                                 .padding(.top, 3)
                             // Fits the room the answers had, however small (a dialog has no message box): it is
                             // cut short rather than drawn over the next card.
-                            Text(said(sent)).font(Theme.small).foregroundStyle(theme.sub)
+                            Text(said(sent)).font(Theme.small).foregroundStyle(theme.subHover)
                                 .lineLimit(6).truncationMode(.tail)
                             Spacer(minLength: 0)
                         }
@@ -1744,7 +1751,8 @@ struct ConversationView: View {
         } else {
             // What a message ended on says more than how it began ("Your remaining actions:" told nothing).
             Button { withAnimation(Motion.push) { _ = opened.insert(turn.id) } } label: {
-                Text(Prose.styled(Self.preview(blocks) ?? turn.text))
+                // Never the raw text: a message of only empty list items has nothing to say but its bullet.
+                Text(Prose.styled(Self.preview(blocks) ?? (blocks.isEmpty ? turn.text : "•")))
                     .font(Theme.small).lineSpacing(4).foregroundStyle(theme.ink)
                     .lineLimit(3).multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1757,25 +1765,39 @@ struct ConversationView: View {
         }
     }
 
+    /// A list item's last words: its own text read as Markdown again (an item can hold a code block or a table:
+    /// "1. Install it:" then code showed the code's source, T-34), with its number or bullet. When its own text
+    /// goes on after its nested items (code written below them), that is its last word; otherwise its deepest last
+    /// nested item is. An item that is only code, a table or a heading names it (it was a lone "•":
+    /// T-44). Nil when there is nothing to say, so the preview looks further back.
+    static func itemPreview(_ item: MessageBlock.ListItem) -> String? {
+        let mark = item.number.map { "\($0). " } ?? "• "
+        let inner = MessageBlocks.split(item.text)
+        var lead: String?
+        var rest = inner
+        if let first = inner.first, case .paragraph(let t) = first.kind { lead = t; rest = Array(inner.dropFirst()) }
+        let tail = rest.isEmpty ? nil : preview(rest)
+        // Its last nested item is its last word, unless its own text goes on after them.
+        // (The last nested item with something to say: an empty one skipped its earlier siblings.)
+        // One call per nested item: the lazy form ran the chosen one twice per level, so the time doubled with
+        // each level and a 20-deep list froze the dropdown for half a minute (verifier 3, T-44).
+        if !item.endsOnOwnText {
+            for child in item.children.reversed() { if let deeper = itemPreview(child) { return deeper } }
+        }
+        let said = [lead, tail].compactMap { $0 }.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return said.isEmpty ? nil : mark + said
+    }
+
     /// A held-short message's last words as plain text: its last paragraph, heading, quote or list item. A table or
     /// a code block is named instead of shown as its source (three lines of "| a | b |" said nothing: verifier, T-34).
     static func preview(_ blocks: [MessageBlock]) -> String? {
         for b in blocks.reversed() {
             switch b.kind {
             case .paragraph(let t), .heading(_, let t): return t
-            case .quote(let t): return MessageBlocks.split(t).last.flatMap { preview([$0]) } ?? t
+            case .quote(let t): if let said = preview(MessageBlocks.split(t)) { return said }   // never its raw source
             case .list(let items):
-                // Its last item, the deepest one when it nests, read as Markdown again: an item can hold a code
-                // block or a table ("1. Install it:" then code showed the code's source: verifier 2, T-34).
-                if var item = items.last {
-                    while let child = item.children.last { item = child }
-                    let mark = item.number.map { "\($0). " } ?? "• "
-                    let inner = MessageBlocks.split(item.text)
-                    let lead = inner.first.flatMap { b -> String? in
-                        if case .paragraph(let t) = b.kind { return t } else { return nil } }
-                    let tail = inner.count > 1 ? preview(Array(inner.dropFirst())) : nil
-                    return mark + ([lead, tail].compactMap { $0 }.joined(separator: " ")).trimmingCharacters(in: .whitespaces)
-                }
+                // The last item with something to say (an empty last item fell back to the raw text: T-44).
+                for item in items.reversed() { if let said = itemPreview(item) { return said } }
             case .table(let t):
                 let names = t.header.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
                 return names.isEmpty ? "A table" : "A table: " + names.joined(separator: ", ")

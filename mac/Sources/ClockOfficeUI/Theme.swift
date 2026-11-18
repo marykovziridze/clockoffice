@@ -11,15 +11,20 @@ public struct Theme: Sendable {
     public var select: Color
     /// The fill behind the user's own messages in a conversation: clearly a shade apart from the panel, no outline.
     public var bubble: Color { self.ink.opacity(0.09) }
-    /// The fill of the message box: a shade apart from the panel, like the box in chat apps.
+    /// The fill of the message box: a shade apart from the panel, like the box in chat apps. A see-through tint, so
+    /// it stays a shade apart on a selected card too (made solid, it all but vanished there: T-45 verifier 2); grey
+    /// text inside it uses `subHover`, which reads on that stacked ground.
     public var composer: Color { self.ink.opacity(0.07) }
 
+    // The grey (`sub`) has to read as text on a selected or hovered row too, not only on the bare panel: 6E6E73
+    // was 4.23:1 on a selected card in light mode and A1A1A6 measured 4.54:1 on screen in dark, against the 4.5:1
+    // floor (T-45). Now 4.74:1 and 5.29:1 on the selection (5.37:1 and 6.51:1 on the panel), by WCAG's formula.
     public static let dark = Theme(
-        panel: Color(hex: 0x262426), ink: Color(hex: 0xF5F5F7), sub: Color(hex: 0xA1A1A6),
+        panel: Color(hex: 0x262426), ink: Color(hex: 0xF5F5F7), sub: Color(hex: 0xA8A8AD),
         hair: Color.white.opacity(0.10), accent: Color(hex: Edition.current.accentDark ?? 0xFFA35C), field: Color(hex: 0x1C1C1E),
         hover: Color.gray.opacity(0.10), rule: Color.gray.opacity(0.55), select: Color.white.opacity(0.07))
     public static let light = Theme(
-        panel: Color(hex: 0xFBF7F8), ink: Color(hex: 0x1D1D1F), sub: Color(hex: 0x6E6E73),
+        panel: Color(hex: 0xFBF7F8), ink: Color(hex: 0x1D1D1F), sub: Color(hex: 0x66666B),
         hair: Color.black.opacity(0.08), accent: Color(hex: Edition.current.accentLight ?? 0xA8480A), field: Color.white,
         hover: Color.gray.opacity(0.10), rule: Color.gray.opacity(0.55), select: Color.black.opacity(0.055))
 
