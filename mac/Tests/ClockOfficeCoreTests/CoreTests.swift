@@ -641,10 +641,15 @@ func readUntilClosed(port: UInt16, timeout: Int = 3) -> String {
     try door.start(port: port)
     defer { door.stop() }
     for _ in 0..<100 { if case .failed = door.door { break }; try await Task.sleep(nanoseconds: 20_000_000) }
-    // The holder here is this test process itself, named as the system names it.
+    guard case .failed = door.door else { Issue.record("state: \(door.door)"); return }
+    // The holder here is this test process (its name depends on how the tests run): once it is looked up, the
+    // reason names it instead of "another app".
+    let generic = SnapshotServer.Door.failed(SnapshotServer.why(NWError.posix(.EADDRINUSE)))
+    for _ in 0..<150 { if door.door != generic { break }; try await Task.sleep(nanoseconds: 20_000_000) }
     guard case .failed(let why) = door.door else { Issue.record("state: \(door.door)"); return }
-    #expect(why.hasSuffix("is using the connection it needs"), "reason: \(why)")
-    #expect(!why.contains("POSIX") && !why.contains("port"))
+    #expect(why != "another app is using the connection it needs", "the holder was named")
+    #expect(why.hasSuffix("is using the connection it needs") || why == "another copy of ClockOffice is already running")
+    #expect(!why.contains("POSIX") && !why.contains("rawValue"))
     // A free port: the same door says it listens.
     let probe = SnapshotServer()
     let free = try await probe.startOnFreePort()
@@ -672,6 +677,66 @@ func readUntilClosed(port: UInt16, timeout: Int = 3) -> String {
         #expect(door.door == .listening, "state after a quick restart: \(door.door)")
         door.stop()
     }
+}
+
+@Test func theDoorSaysItFailedAtOnceEvenWhenNamingTheAppIsSlow() async throws {
+    let holder = SnapshotServer()
+    let port = try await holder.startOnFreePort()
+    defer { holder.stop() }
+    let door = SnapshotServer()
+    door.holderLookup = { _ in Thread.sleep(forTimeInterval: 5); return "Slow" }
+    try door.start(port: port)
+    defer { door.stop() }
+    let started = Date()
+    for _ in 0..<100 { if case .failed = door.door { break }; try await Task.sleep(nanoseconds: 20_000_000) }
+    #expect(door.door == .failed("another app is using the connection it needs"))
+    #expect(Date().timeIntervalSince(started) < 2.5, "the retries take about 1 s; the slow lookup adds nothing")
+}
+
+@Test func aStopWhileListeningIsBeingToldStillEndsOnStopped() async throws {
+    // The race verifier 2 of T-43 saw 3 times in 6000, made to happen every time: "listening" is still being told
+    // when stop() is called.
+    let probe = SnapshotServer()
+    let port = try await probe.startOnFreePort()
+    probe.stop()
+    final class Seen: @unchecked Sendable { let lock = NSLock(); var all: [SnapshotServer.Door] = [] }
+    let seen = Seen()
+    let door = SnapshotServer()
+    door.tellingPause = 0.3
+    door.onDoorChange = { d in seen.lock.withLock { seen.all.append(d) } }
+    try door.start(port: port)
+    for _ in 0..<100 { if door.door == .listening { break }; try await Task.sleep(nanoseconds: 10_000_000) }
+    door.stop()
+    try await Task.sleep(nanoseconds: 1_200_000_000)
+    door.doorEventsDelivered()
+    let told = seen.lock.withLock { seen.all }
+    #expect(told.last == .stopped, "told: \(told)")
+}
+
+@Test func aProgramThatIgnoresTheStopIsEndedAtItsTimeout() {
+    // A stuck helper (a hung lsof) must not hold its caller past the timeout (verifier 2 of T-43: 10 s).
+    let started = Date()
+    _ = Shell.run("/bin/sh", ["-c", "trap '' TERM; sleep 30"], timeout: 1)
+    #expect(Date().timeIntervalSince(started) < 4, "took \(Date().timeIntervalSince(started)) s")
+}
+
+@Test func programNamesAreShownCleanly() {
+    #expect(SnapshotServer.cleanName("Python") == "Python")
+    #expect(SnapshotServer.cleanName("two\\nlines") == "two lines")
+    #expect(SnapshotServer.cleanName("ClockOffi") == "ClockOffice")
+    #expect(SnapshotServer.cleanName("  ") == nil)
+    #expect(SnapshotServer.cleanName(String(repeating: "a", count: 80))?.count == 32)
+    #expect(SnapshotServer.why(holder: "ClockOffice") == "another copy of ClockOffice is already running")
+    #expect(SnapshotServer.why(holder: "Python") == "Python is using the connection it needs")
+}
+
+@Test func theMenuLineForEveryFailureIsPlain() {
+    #expect(SnapshotServer.line(.listening) == nil)
+    #expect(SnapshotServer.line(.failed(SnapshotServer.why(holder: "Python")))
+            == "ClockOffice can't connect: Python is using the connection it needs. The widget, Allow/Deny and the usage line are off.")
+    // The path where setting up the door throws (Store's catch): the same plain line.
+    let thrown = SnapshotServer.line(.failed(SnapshotServer.why(POSIXError(.EINVAL)))) ?? ""
+    #expect(thrown.contains("(error 22)") && !thrown.contains("POSIX") && !thrown.contains("rawValue"))
 }
 
 @Test func theDoorsReasonsAreInPlainWords() {

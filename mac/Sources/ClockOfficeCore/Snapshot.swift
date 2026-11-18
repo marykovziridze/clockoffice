@@ -248,7 +248,8 @@ public final class SnapshotServer: @unchecked Sendable {
                         catch { self.setDoor(.failed(Self.why(error)), port: port, generation: gen) }
                     }
                 } else {
-                    self.setDoor(.failed(Self.why(e, port: port)), port: port, generation: gen)
+                    self.setDoor(.failed(Self.why(e)), port: port, generation: gen)
+                    if case .posix(.EADDRINUSE) = e { self.nameHolder(port: port, generation: gen) }
                 }
             default: break
             }
@@ -281,29 +282,79 @@ public final class SnapshotServer: @unchecked Sendable {
         lock.lock()
         if let gen, gen != generation { lock.unlock(); return }
         let changed = doorState != d; doorState = d; doorPortValue = port
+        let atGen = generation
         lock.unlock()
-        if changed { onDoorChange?(d) }
+        guard changed else { return }
+        // Told in order, on one queue, and only while the start it belongs to is still the current one: a check
+        // under the lock followed by a call outside it still let "listening" arrive after "stopped" 3 times in 6000
+        // (verifier 2 of T-43). On this queue a stop's own "stopped" is queued after anything it overtook.
+        let pause = tellingPause
+        doorEvents.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock(); let current = self.generation == atGen; self.lock.unlock()
+            guard current else { return }
+            if pause > 0 { Thread.sleep(forTimeInterval: pause) }
+            self.onDoorChange?(d)
+        }
     }
+    private let doorEvents = DispatchQueue(label: "clockoffice.door-events")
+    /// Tests only: a pause just before a state change is told, to make the stop-while-telling race happen every time.
+    var tellingPause: TimeInterval = 0
+
+    /// Waits until every state change told so far has been delivered (tests).
+    public func doorEventsDelivered() { doorEvents.sync {} }
+
+    /// Looks up which program holds a port. Kept apart and off the listener's queue, so a slow lookup never
+    /// holds the door's state back (verifier 2 of T-43: a stuck lsof kept it "starting" for 10 s).
+    var holderLookup: @Sendable (UInt16) -> String? = { SnapshotServer.holder(of: $0) }
 
     /// The reason in plain words, never the system's own error text (her rule: no jargon on screen). For a port
     /// in use it names the app that holds it when the system says which one.
-    public static func why(_ error: Error?, port: UInt16? = nil) -> String {
+    public static func why(_ error: Error?) -> String {
         if case .posix(let code)? = error as? NWError ?? (error as? POSIXError).map({ NWError.posix($0.code) }) {
-            if code == .EADDRINUSE {
-                if let port, let app = holder(of: port) { return "\(app) is using the connection it needs" }
-                return "another app is using the connection it needs"
-            }
+            if code == .EADDRINUSE { return "another app is using the connection it needs" }
             return "it could not open its connection (error \(code.rawValue))"
         }
         return "it could not open its connection"
+    }
+
+    /// The reason once the program in the way is known.
+    static func why(holder: String) -> String {
+        holder == "ClockOffice" ? "another copy of ClockOffice is already running" : "\(holder) is using the connection it needs"
+    }
+
+    /// The menu's line for a door that is not listening (nil while it listens). Words approved by her, 2026-11-18.
+    public static func line(_ door: Door) -> String? {
+        guard case .failed(let why) = door else { return nil }
+        return "ClockOffice can't connect: \(why). The widget, Allow/Deny and the usage line are off."
+    }
+
+    /// After a "port in use" failure: finds the program in the way and names it, if the door is still in that state.
+    private func nameHolder(port: UInt16, generation gen: Int) {
+        let lookup = holderLookup
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let name = lookup(port), let self else { return }
+            self.lock.lock(); let still = self.generation == gen && self.doorState == .failed(Self.why(NWError.posix(.EADDRINUSE))); self.lock.unlock()
+            if still { self.setDoor(.failed(Self.why(holder: name)), port: port, generation: gen) }
+        }
     }
 
     /// The name of the program listening on this port, as lsof reports it ("Python", "node"); nil when unknown.
     static func holder(of port: UInt16) -> String? {
         let out = Shell.run("/usr/sbin/lsof", ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-Fc"], timeout: 2).stdout
         guard let line = out.split(separator: "\n").first(where: { $0.hasPrefix("c") }) else { return nil }
-        let name = String(line.dropFirst()).trimmingCharacters(in: .whitespaces)
-        return name.isEmpty ? nil : name
+        return cleanName(String(line.dropFirst()))
+    }
+
+    /// A program name fit to show: letters, digits, spaces and . _ - only (lsof writes odd characters as escapes
+    /// such as "\\n"), at most 32 characters; any ClockOffice edition reads "ClockOffice".
+    static func cleanName(_ raw: String) -> String? {
+        let unescaped = raw.replacingOccurrences(of: #"\\(x[0-9A-Fa-f]{2}|[a-z])"#, with: " ", options: .regularExpression)
+        let kept = String(unescaped.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || " ._-".unicodeScalars.contains($0) })
+        let name = kept.split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
+        if name.isEmpty { return nil }
+        if name.hasPrefix("ClockOffi") { return "ClockOffice" } // lsof cuts names at 9 characters
+        return String(name.prefix(32))
     }
 
     private func accept(_ conn: NWConnection) {

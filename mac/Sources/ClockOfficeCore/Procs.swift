@@ -107,7 +107,10 @@ public enum Shell {
         let deadline = DispatchTime.now() + timeout
         if group.wait(timeout: deadline) == .timedOut {
             p.terminate()
-            _ = group.wait(timeout: .now() + 2)
+            // A program that ignores the polite stop is ended: the timeout is a promise to the caller (a stub lsof
+            // that ignored it held its caller for 10 s: verifier 2 of T-43).
+            if group.wait(timeout: .now() + 1) == .timedOut, p.isRunning { kill(p.processIdentifier, SIGKILL) }
+            _ = group.wait(timeout: .now() + 1)
         }
         p.waitUntilExit()
         return Result(status: p.terminationStatus,

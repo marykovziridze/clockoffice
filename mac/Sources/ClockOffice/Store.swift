@@ -296,9 +296,8 @@ final class Store {
     }
 
     private func takeDoor(_ door: SnapshotServer.Door) {
-        let next: String?
         // Plain words: what stops working and why. No port number: it means nothing to act on.
-        if case .failed(let why) = door { next = "ClockOffice can't connect: \(why). The widget, Allow/Deny and the usage line are off." } else { next = nil }
+        let next = SnapshotServer.line(door)
         if next != doorProblem { doorProblem = next }
     }
 
