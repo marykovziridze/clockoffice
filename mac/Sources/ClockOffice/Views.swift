@@ -231,15 +231,20 @@ struct ReplyBox: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(store.attachments[session.id] ?? [], id: \.self) { path in
-                Button { store.detach(session.id, path: path) } label: {
-                    // The × says what a click does.
-                    Text("Attached: \((path as NSString).lastPathComponent)  ×")
-                        .font(Theme.small).foregroundStyle(theme.sub).lineLimit(1).truncationMode(.middle)
+            // What will go with the message: a picture as a small picture, another file as its icon, name and size,
+            // each with its own × (a line of text, removed by a click anywhere on it, said too little: T-33).
+            if let files = store.attachments[session.id], !files.isEmpty {
+                // At most about three rows; more scroll, so the message box stays in view.
+                ScrollView(.vertical, showsIndicators: true) {
+                    Flow(spacing: 8, lineSpacing: 4) {
+                        ForEach(files, id: \.self) { AttachmentChip(path: $0, session: session) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .buttonStyle(PressStyle())
-                .clickable()
-                .help("Click to remove")
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(maxHeight: 200)
+                .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity)
             }
             // The box grows with the text, up to six lines: a one-line box showed only the tail of a longer reply.
             // The + and the arrow stay at the foot.
@@ -288,22 +293,21 @@ struct ReplyBox: View {
             .contentShape(RoundedRectangle(cornerRadius: 21, style: .circular))
             .onTapGesture { focused = true } // the whole box takes the click, not only the line of text
             .animation(Motion.quick, value: ready)
-            .onDrop(of: [.fileURL], isTargeted: $targeted) { providers in
-                for p in providers {
-                    _ = p.loadObject(ofClass: URL.self) { url, _ in
-                        guard let url else { return }
-                        Task { @MainActor in store.attach(session.id, paths: [url.path]) }
-                    }
-                }
-                return true
-            }
+            .onDrop(of: Attach.types, delegate: AttachDrop(id: session.id, store: store, over: $targeted))
             if let e = store.error(session) {
                 Text(e).font(Theme.small).foregroundStyle(theme.ink).fixedSize(horizontal: false, vertical: true)
             }
         }
         .onChange(of: focused) { _, now in
             if now { surface.focusedReply = session.id } else if surface.focusedReply == session.id { surface.focusedReply = nil }
+            // The editor becomes the box's a moment after the box gets the caret: taken off then, and again shortly
+            // after (a drop straight after a click still reached it: T-32).
+            if now { for t in [0.0, 0.1, 0.4] { DispatchQueue.main.asyncAfter(deadline: .now() + t) { Attach.keepFilesOutOfTextEditors() } } }
         }
+        // A real drag crosses the box's edge before it reaches the text: the editor's list is cleared then too.
+        .onChange(of: targeted) { _, now in if now { Attach.keepFilesOutOfTextEditors() } }
+        // The editor takes its list back as text changes, so it is taken off again each time.
+        .onChange(of: draft) { _, _ in if focused { DispatchQueue.main.async { Attach.keepFilesOutOfTextEditors() } } }
         .onAppear {
             if autofocus && store.autofocus { focused = true }
             if surface.focusRequest == session.id { focused = true; surface.focusRequest = nil }
@@ -566,7 +570,6 @@ struct UsageLines: View {
 
 // MARK: Rows
 
-/// A question in the dropdown: who asks, for how long, what, and the quickest way to answer.
 /// Which sessions' one-click answers the user just took back with Undo (so a card can tell Undo from the answer
 /// going out: both end the wait the same way).
 @MainActor enum Undone {
@@ -580,6 +583,167 @@ struct UsageLines: View {
     }
 }
 
+/// Files and pictures dropped on a conversation are attached to its next message, as the + does.
+@MainActor
+enum Attach {
+    static let types: [UTType] = [.fileURL, .image]
+
+    /// The text editor macOS puts in a message box takes a dropped file itself and types its path into the text, so
+    /// the drop never reached the app (reproduced in the rig, 2026-11-17, T-32). Files, links and pictures are taken
+    /// off the editor's list; text it still takes.
+    static func keepFilesOutOfTextEditors() {
+        for w in NSApp.windows {
+            guard let editor = w.firstResponder as? NSTextView, editor.isFieldEditor else { continue }
+            refuseFiles(editor)
+        }
+    }
+
+    private static let fileTypes: Set<String> = [
+        NSPasteboard.PasteboardType.fileURL.rawValue, NSPasteboard.PasteboardType.URL.rawValue,
+        NSPasteboard.PasteboardType.tiff.rawValue, NSPasteboard.PasteboardType.png.rawValue,
+        NSPasteboard.PasteboardType.pdf.rawValue, NSPasteboard.PasteboardType.fileContents.rawValue,
+        "NSFilenamesPboardType", "Apple URL pasteboard type", "NeXT TIFF v4.0 pasteboard type", "Apple PDF pasteboard type",
+        "Apple PNG pasteboard type", "Apple PICT pasteboard type", "CorePasteboardFlavorType 0x6D6F6F76",
+        "WebURLsWithTitlesPboardType", "NeXT RTFD pasteboard type", "com.apple.flat-rtfd",
+        "com.apple.pasteboard.promised-file-content-type", "com.apple.NSFilePromiseItemMetaData",
+        "com.apple.pasteboard.promised-file-url", "public.image",
+    ]
+
+    /// Taking the types off once did not hold: the editor puts its list back whenever it is set up again (after
+    /// typing, after focus moves). So the editor is given a variant of its own kind whose list of acceptable drag
+    /// types leaves files, links and pictures out, and it keeps that list however often it is set up.
+    private static func refuseFiles(_ editor: NSTextView) {
+        guard let kind: AnyClass = object_getClass(editor) else { return }
+        let name = NSStringFromClass(kind)
+        if name.hasPrefix("ClockOfficeNoFiles_") {
+            let kept = editor.registeredDraggedTypes.filter { !fileTypes.contains($0.rawValue) }
+            if kept.count != editor.registeredDraggedTypes.count { editor.unregisterDraggedTypes(); editor.registerForDraggedTypes(kept) }
+            return
+        }
+        let variantName = "ClockOfficeNoFiles_" + name
+        var variant: AnyClass? = NSClassFromString(variantName)
+        if variant == nil, let made = objc_allocateClassPair(kind, variantName, 0) {
+            let sel = #selector(getter: NSTextView.acceptableDragTypes)
+            typealias Getter = @convention(c) (AnyObject, Selector) -> NSArray
+            let inherited = unsafeBitCast(class_getMethodImplementation(kind, sel), to: Getter.self)
+            let block: @convention(block) (AnyObject) -> NSArray = { me in
+                let all = (inherited(me, sel) as? [Any]) ?? []
+                return all.filter { item in
+                    let raw = (item as? String) ?? (item as? NSPasteboard.PasteboardType)?.rawValue ?? ""
+                    return !fileTypes.contains(raw)
+                } as NSArray
+            }
+            class_addMethod(made, sel, imp_implementationWithBlock(block), "@@:")
+            objc_registerClassPair(made)
+            variant = made
+        }
+        guard let variant else { return }
+        object_setClass(editor, variant)
+        // And at once: the editor's current list is not redone until it is next set up.
+        let kept = editor.registeredDraggedTypes.filter { !fileTypes.contains($0.rawValue) }
+        editor.unregisterDraggedTypes()
+        editor.registerForDraggedTypes(kept)
+    }
+
+    /// True when the drop is taken: the session can be written to and nothing is on its way to it.
+    /// Whether a file dropped now would be attached: the session can be written to, and nothing is on its way to it
+    /// (a typed message, a one-click answer waiting out its Undo) and it is not being closed. A drop in those moments
+    /// was taken and quietly added to the next message (verifier, T-32).
+    static func accepts(_ id: String, store: Store) -> Bool {
+        guard let s = store.session(id) else { return false }
+        return store.canReply(s) && !s.certain && store.sentText(s) == nil && store.pending[id] == nil && store.closing[id] == nil
+    }
+
+    @discardableResult
+    static func load(_ providers: [NSItemProvider], into id: String, store: Store) -> Bool {
+        guard accepts(id, store: store) else { return false }
+        var any = false
+        for p in providers {
+            // A file first, by its own path and name (a picture file offered its picture before its address, and
+            // was saved again as "Pasted-…png").
+            if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) || p.canLoadObject(ofClass: URL.self) {
+                any = true
+                _ = p.loadObject(ofClass: URL.self) { url, _ in
+                    if let url, url.isFileURL {
+                        Task { @MainActor in store.attach(id, paths: [url.path]) }
+                    } else if p.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                        Task { @MainActor in loadPicture(p, into: id, store: store) }
+                    }
+                }
+            } else if p.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                any = true
+                loadPicture(p, into: id, store: store)
+            }
+        }
+        return any
+    }
+
+    /// A picture without a file (dragged from a browser or a screenshot's thumbnail): saved, then attached.
+    /// Saved under a name of its own: two pictures dropped in the same second were both named after that second,
+    /// and the second replaced the first (verifier, T-32).
+    private static func loadPicture(_ p: NSItemProvider, into id: String, store: Store) {
+        p.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+            guard let data, let image = NSImage(data: data), let tiff = image.tiffRepresentation,
+                  let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return }
+            Task { @MainActor in
+                let dir = Store.supportDirectory.appendingPathComponent("attachments")
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd-HHmmss"
+                let file = dir.appendingPathComponent("Dropped-\(f.string(from: Date()))-\(UUID().uuidString.prefix(6)).png")
+                if (try? png.write(to: file)) != nil { store.attach(id, paths: [file.path]) }
+            }
+        }
+    }
+}
+
+/// A drop asks for files first and only then for pictures: asked for both at once, a picture file came as its
+/// picture alone (no address), and was attached as a copy named "Pasted-…png" (T-32).
+struct AttachDrop: DropDelegate {
+    let id: String
+    let store: Store
+    @Binding var over: Bool
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: Attach.types) && MainActor.assumeIsolated { Attach.accepts(id, store: store) }
+    }
+    func dropEntered(info: DropInfo) {
+        Task { @MainActor in Attach.keepFilesOutOfTextEditors() }
+        // Lit only where the drop will be taken.
+        over = MainActor.assumeIsolated { Attach.accepts(id, store: store) }
+    }
+    func dropExited(info: DropInfo) { over = false }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .copy) }
+    func performDrop(info: DropInfo) -> Bool {
+        over = false
+        let files = info.itemProviders(for: [.fileURL])
+        let providers = files.isEmpty ? info.itemProviders(for: [.image]) : files
+        return MainActor.assumeIsolated { Attach.load(providers, into: id, store: store) }
+    }
+}
+
+/// The whole conversation (or question card) takes a dropped file, not only its message box, and shows it is ready
+/// to while the file is over it.
+struct DropsAttachments: ViewModifier {
+    let session: Session
+    var radius: CGFloat = 12
+    @Environment(Store.self) private var store
+    @Environment(\.theme) private var theme
+    @State private var over = false
+
+    func body(content: Content) -> some View {
+        content
+            .onDrop(of: Attach.types, delegate: AttachDrop(id: session.id, store: store, over: $over))
+            .overlay {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(theme.accent, lineWidth: 2)
+                    .opacity(over && Attach.accepts(session.id, store: store) ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+            .animation(Motion.quick, value: over)
+    }
+}
+
+/// A question in the dropdown: who asks, for how long, what, and the quickest way to answer.
 struct QuestionRow: View {
     let session: Session
     /// The user's typed answer went out: for a moment the card says so in the message box's place, then it folds
@@ -716,6 +880,7 @@ struct QuestionRow: View {
             .padding(.leading, 56).padding(.trailing, 12)
         }
         .padding(.bottom, 14)
+        .modifier(DropsAttachments(session: session, radius: 10))
         // The row the arrow keys are on: the band covers the whole card, answers and message box included
         // (a band behind the question's words alone was easy to miss).
         .background(surface.selected == session.id ? theme.select : (hover ? theme.select.opacity(0.55) : .clear),
@@ -1179,6 +1344,95 @@ enum Pictures {
     }
 }
 
+/// One attachment waiting above the message box.
+private struct AttachmentChip: View {
+    let path: String
+    let session: Session
+    @Environment(Store.self) private var store
+    @Environment(\.theme) private var theme
+    @State private var image: NSImage?
+    @State private var unreadable = false
+
+    private var name: String { (path as NSString).lastPathComponent }
+    private var isPicture: Bool {
+        Linker.pictureTypes.contains((path as NSString).pathExtension.lowercased()) && FileManager.default.fileExists(atPath: path)
+    }
+    private static let side: CGFloat = 52
+
+    var body: some View {
+        chip
+            .help(path)   // on the chip only: on the whole it also covered the ×, whose help says what it does
+            .overlay(alignment: .topTrailing) {
+                Button { store.detach(session.id, path: path) } label: {
+                    // 18 drawn, 26 to click (the circle alone was 18: verifier, T-33).
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold)).foregroundStyle(theme.panel)
+                        .frame(width: 18, height: 18).background(theme.sub, in: Circle())
+                        .frame(width: 26, height: 26).contentShape(Rectangle())
+                }
+                .buttonStyle(PressStyle())
+                .clickable()
+                .offset(x: 10, y: -10)
+                .help("Remove " + name)
+                .accessibilityLabel("Remove " + name)
+            }
+            .padding(.top, 10).padding(.trailing, 10)   // room for the ×, which sits over the corner
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel((isPicture && !unreadable ? "Picture: " : "File: ") + name)
+    }
+
+    @ViewBuilder private var chip: some View {
+        // A picture that cannot be read shows as a file, with its name (it was an empty square: verifier, T-33).
+        if isPicture && !unreadable {
+            Group {
+                if let image {
+                    Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    theme.composer
+                }
+            }
+            .frame(width: Self.side, height: Self.side)
+            .clipped()
+            // The picture takes no clicks: drawn cropped, it still took them over its whole uncropped size and
+            // covered the × and the answers beside it (verifier, T-33).
+            .allowsHitTesting(false)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(theme.hair, lineWidth: 1))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            // Made large enough that the short side fills the square sharply (it was made 104 px on the long side
+            // and enlarged).
+            .task(id: path) {
+                image = await Pictures.small(path, longest: 520)
+                unreadable = image == nil
+            }
+        } else {
+            HStack(spacing: 8) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: path)).resizable().frame(width: 28, height: 28)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(name).font(Theme.small).foregroundStyle(theme.ink).lineLimit(1).truncationMode(.middle)
+                    Text(Self.size(of: path)).font(Theme.small).foregroundStyle(theme.sub)
+                }
+                .frame(maxWidth: 170, alignment: .leading)
+            }
+            .padding(.leading, 8).padding(.trailing, 22).frame(height: Self.side)
+            // On the panel itself with a hairline, as a picture is: grey 11-point text on the box's tint was 4.16:1
+            // in light mode, under the 4.5:1 floor and the 13-point floor (verifier, T-33).
+            // Its own panel ground too, so a selected or hovered card's shading does not lower that contrast
+            // (4.23:1 on a selected card in light mode: verifier 4).
+            .background(theme.panel, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(theme.hair, lineWidth: 1))
+        }
+    }
+
+    /// "1.2 MB"; a folder says so instead of a size.
+    static func size(of path: String) -> String {
+        var dir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &dir) else { return "not found" }
+        if dir.boolValue { return "Folder" }
+        let bytes = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64) ?? 0
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+}
+
 /// The pictures of one message, small, side by side. A click opens the picture itself.
 struct PictureRow: View {
     let paths: [String]
@@ -1222,6 +1476,75 @@ private struct Picture: View {
         .task(id: path) { image = await Pictures.small(path, longest: Int(max(width, height) * 2)) }
     }
 }
+
+/// "Copy Message" on a right-click (or Control-click) on a message. A layer marks where each message is; the app
+/// looks at a right-click before SwiftUI does and, on a message, shows this menu. (A SwiftUI context menu, and then a
+/// layer that took the click itself, both lost it to the selectable text, which shows its own text menu: verifier
+/// and a real right-click, T-35.) Every other click goes on to the text as before.
+struct CopyMessageCatcher: NSViewRepresentable {
+    let text: String
+    func makeNSView(context: Context) -> Marker { Self.watch(); return Marker() }
+    func updateNSView(_ v: Marker, context: Context) { v.text = text }
+
+    final class Marker: NSView {
+        var text = ""
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }   // never in the way of a click
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil { CopyMessageCatcher.markers.add(self) }
+        }
+        func menu() -> NSMenu {
+            let menu = NSMenu()
+            let item = NSMenuItem(title: "Copy Message", action: #selector(copyMessage), keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+            return menu
+        }
+        @objc func copyMessage() {
+            Clip.board.clearContents()
+            Clip.board.setString(text, forType: .string)
+        }
+    }
+
+    @MainActor static let markers = NSHashTable<Marker>.weakObjects()
+    @MainActor private static var monitor: Any?
+
+    /// The message under a point of a window, if any (the innermost, when they nest). Only the part of a message
+    /// that is in view counts: one scrolled away under the header or the message box took right-clicks there
+    /// (verifier, T-35).
+    @MainActor static func marker(at point: NSPoint, in window: NSWindow) -> Marker? {
+        markers.allObjects.filter { m in
+            guard m.window === window, !m.isHiddenOrHasHiddenAncestor else { return false }
+            // Its own frame, cut to what is in view. (`visibleRect` alone came back as the whole scrolling area,
+            // so every message matched every click: verifier 3, T-35.)
+            let own = m.convert(m.bounds, to: nil)
+            let shown = own.intersection(m.convert(m.visibleRect, to: nil))
+            return !shown.isEmpty && shown.contains(point)
+        }.min { $0.bounds.width * $0.bounds.height < $1.bounds.width * $1.bounds.height }
+    }
+
+    /// Text the user has selected under the point: then the right-click is the text's own (Copy, Look Up).
+    @MainActor static func selection(at point: NSPoint, in window: NSWindow) -> Bool {
+        guard let content = window.contentView,
+              let hit = content.hitTest(content.superview?.convert(point, from: nil) ?? point) else { return false }
+        let text = (hit as? NSTextView) ?? ((hit as? NSTextField)?.currentEditor() as? NSTextView)
+        return (text?.selectedRange().length ?? 0) > 0
+    }
+
+    @MainActor private static func watch() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown, .leftMouseDown]) { e in
+            let right = e.type == .rightMouseDown || (e.type == .leftMouseDown && e.modifierFlags.contains(.control))
+            guard right, let w = e.window, let m = marker(at: e.locationInWindow, in: w),
+                  !selection(at: e.locationInWindow, in: w) else { return e }
+            NSMenu.popUpContextMenu(m.menu(), with: e, for: m)
+            return nil
+        }
+    }
+}
+
+/// Where Copy puts things: the clipboard, or the test rig's own board, so a test never replaces what the user copied.
+@MainActor enum Clip { static var board = NSPasteboard.general }
 
 /// The last few things said in a session. The newest message is the one to read, so it is set as running text in
 /// full ink; what came before is context and stays to two quiet lines each. No bubbles, no boxes.
@@ -1349,6 +1672,10 @@ struct ConversationView: View {
                 }
                 }
                 .opacity(fresh.contains(turn.id) ? 0 : 1)
+                // The whole message, however much of it shows here (the dropdown shows a message's closing part).
+                // A layer over the message takes the right-click (a SwiftUI context menu lost it to the selectable
+                // text, which showed its own text menu: verifier, T-35); every other click goes through to the text.
+                .overlay(CopyMessageCatcher(text: turn.who == .you ? Pictures.withoutStandIns(turn.text) : turn.text))
                 .id(key(turn.id))
             }
             // What the user just sent, at once and in their own bubble, until the session's record carries it: without it
@@ -1398,24 +1725,26 @@ struct ConversationView: View {
     /// whole. The dropdown is small, so there the newest shows its closing part and an older one its last lines;
     /// a click gives the whole message.
     @ViewBuilder private func claudes(_ turn: Turn, last: Bool) -> some View {
-        let all = Prose.split(turn.text)
+        // Formatted as written: headings, lists, tables and code (T-34). Blocks, not blank lines, decide where a
+        // message may be cut: a table or a code block with a blank line inside stays whole.
+        let blocks = MessageBlocks.split(turn.text)
         if roomy || opened.contains(turn.id) || (last && expanded) {
-            Prose(paragraphs: all, roomy: roomy, color: theme.ink)
+            MarkdownMessage(blocks: blocks, roomy: roomy, color: theme.ink)
         } else if last {
-            let shown = Self.closing(all)
+            let shown = MessageBlocks.closing(blocks)
             VStack(alignment: .leading, spacing: 5) {
-                if shown.count < all.count {
+                if shown.count < blocks.count {
                     // Three dots say there is more above; a click gives the whole message.
                     LinkButton("…", quiet: true) { withAnimation(Motion.push) { expanded = true } }
                         .help("Show the whole message")
                         .accessibilityLabel("Show the whole message")
                 }
-                Prose(paragraphs: shown, roomy: false, color: theme.ink)
+                MarkdownMessage(blocks: shown, roomy: false, color: theme.ink)
             }
         } else {
             // What a message ended on says more than how it began ("Your remaining actions:" told nothing).
             Button { withAnimation(Motion.push) { _ = opened.insert(turn.id) } } label: {
-                Text(Prose.styled(all.last ?? turn.text))
+                Text(Prose.styled(Self.preview(blocks) ?? turn.text))
                     .font(Theme.small).lineSpacing(4).foregroundStyle(theme.ink)
                     .lineLimit(3).multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1428,14 +1757,33 @@ struct ConversationView: View {
         }
     }
 
-    /// The closing paragraphs of a message, up to about 480 characters: a message ends on what it wants from the user.
-    static func closing(_ paragraphs: [String]) -> [String] {
-        var out: [String] = [], total = 0
-        for p in paragraphs.reversed() {
-            if !out.isEmpty && total + p.count > 480 { break }
-            out.insert(p, at: 0); total += p.count
+    /// A held-short message's last words as plain text: its last paragraph, heading, quote or list item. A table or
+    /// a code block is named instead of shown as its source (three lines of "| a | b |" said nothing: verifier, T-34).
+    static func preview(_ blocks: [MessageBlock]) -> String? {
+        for b in blocks.reversed() {
+            switch b.kind {
+            case .paragraph(let t), .heading(_, let t): return t
+            case .quote(let t): return MessageBlocks.split(t).last.flatMap { preview([$0]) } ?? t
+            case .list(let items):
+                // Its last item, the deepest one when it nests, read as Markdown again: an item can hold a code
+                // block or a table ("1. Install it:" then code showed the code's source: verifier 2, T-34).
+                if var item = items.last {
+                    while let child = item.children.last { item = child }
+                    let mark = item.number.map { "\($0). " } ?? "• "
+                    let inner = MessageBlocks.split(item.text)
+                    let lead = inner.first.flatMap { b -> String? in
+                        if case .paragraph(let t) = b.kind { return t } else { return nil } }
+                    let tail = inner.count > 1 ? preview(Array(inner.dropFirst())) : nil
+                    return mark + ([lead, tail].compactMap { $0 }.joined(separator: " ")).trimmingCharacters(in: .whitespaces)
+                }
+            case .table(let t):
+                let names = t.header.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                return names.isEmpty ? "A table" : "A table: " + names.joined(separator: ", ")
+            case .code(let language, _): return "A block of " + (language.map { $0 + " " } ?? "") + "code"
+            case .rule: continue
+            }
         }
-        return out
+        return nil
     }
 }
 
@@ -1573,6 +1921,7 @@ struct SessionDetail: View {
             }
         }
         .padding(EdgeInsets(top: 14, leading: 18, bottom: 12, trailing: 18))
+        .modifier(DropsAttachments(session: session))
     }
 }
 

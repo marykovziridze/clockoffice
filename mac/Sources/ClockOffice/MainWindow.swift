@@ -247,6 +247,8 @@ private struct ConversationPane: View {
             .padding(.top, 16).padding(.bottom, 20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // A file dropped anywhere on the conversation is attached to the next message (T-32).
+        .modifier(DropsAttachments(session: session, radius: 0))
         // The box dims and comes back on the app's own curve, not in a single frame.
         .animation(Motion.reduced ? nil : Motion.push, value: sent)
         // Resting took the caret out of the box; it comes back when the box does, so the next message can be typed

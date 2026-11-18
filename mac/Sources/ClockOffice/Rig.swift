@@ -17,9 +17,12 @@ import ClockOfficeUI
 //   /open?surface=…       menubar (dropdown closed) | dropdown | menu (the icon's right-click menu) | window | widget
 //   /click?x=…&y=…        a click at that point (points, from the top-left of the picture)
 //   /rightclick?x=…&y=…   a right-click (on the menu-bar icon it opens the menu)
+//   /menu?x=…&y=…[&pick=…] the right-click menu of what is there, without opening it; pick carries out an item
+//                         (copies go to the rig's own board and come back as "copied")
 //   /hover?x=…&y=…        moves the pointer there without clicking
 //   /press?n=…            clicks the middle of text n of the last list
 //   /type?text=…          types into the field that has the caret (click a field first)
+//   /drop?x=…&y=…&path=…  a file dropped there, given to the view a real drag would reach; says which view took it
 //   /key?name=…           return, shift+return, escape, tab, up, down, cmd (hold), cmd-release, cmd+1 … cmd+9, cmd+o, cmd+w
 //
 // The rig's window sits on the screen but fully transparent and outside Mission Control. (It used to be parked
@@ -51,6 +54,7 @@ final class Rig {
 
     init(dir: URL) {
         self.dir = dir
+        Clip.board = NSPasteboard(name: NSPasteboard.Name("clockoffice-rig-\(ProcessInfo.processInfo.processIdentifier)"))
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let sessions = Fixtures.sessions()
         // Session "f" (four days old) cannot be replied to from here, so the "why not" line is on show too.
@@ -60,6 +64,40 @@ final class Rig {
             Turn(id: "d-you-\(n)", who: .you, text: "Step \(n): go on with the next part of the history file, and tell me what you changed."),
             Turn(id: "d-claude-\(n)", who: .assistant, text: "Part \(n) is done.\n\nI rewrote the section on who pays for which tool, checked the three figures against the invoices in the folder, and moved the outdated paragraph to the archive note.\n\nNext is part \(n + 1): the list of open accounts. \(n == 7 ? "LAST WORDS: only the closing summary is left to write." : "I will carry on unless you say otherwise.")"),
         ] }
+        // RIG_MARKDOWN: Claude's last message in "Homepage from Figma" written with a heading, a list, a table and
+        // code, to look at formatted text (T-34).
+        if ProcessInfo.processInfo.environment["RIG_MARKDOWN"] != nil, var a = turns["a"] {
+            // An older message ending in a table, held short in the dropdown.
+            a.append(Turn(id: "a-md-old", who: .assistant, text: "Redirects done:\n\n| Page | Old address | New address |\n|---|---|---|\n| Home | /old | /new |\n| Blog | /blog-old | /blog |"))
+            a.append(Turn(id: "a-md-you0", who: .you, text: "How do I run it?"))
+            a.append(Turn(id: "a-md-step", who: .assistant, text: "Two steps:\n\n1. Install it:\n\n   ```bash\n   npm install\n   npm run build\n   ```"))
+            a.append(Turn(id: "a-md-you", who: .you, text: "Thanks. What changed on the homepage?"))
+            a.append(Turn(id: "a-md", who: .assistant, text: """
+            ## What changed
+
+            The homepage now passes **all checks**:
+
+            - 6 sections built from the file
+            - layout holds at three widths
+              - phone, tablet and desktop
+            - every picture has its description
+
+            | Width | Headline lines | Matches file |
+            |---|---:|:---:|
+            | Phone | 3 | no |
+            | Tablet | 2 | yes |
+            | Desktop | 1 | yes |
+
+            ```swift
+            let size = Theme.headline   // kept at the file's size
+            ```
+
+            > The file shows two lines on a phone.
+
+            Shall I put it on the preview link?
+            """))
+            turns["a"] = a
+        }
         store = Store(fixture: sessions, replyable: Set(sessions.map(\.id)).subtracting(["f"]), turns: turns,
                       usage: UsageLimits(sessionPercent: 62, sessionResets: Date().addingTimeInterval(2 * 3600 + 900),
                                          weekPercent: 24, weekResets: Date().addingTimeInterval(5 * 86400)),
@@ -304,6 +342,38 @@ final class Rig {
 
     /// A click in the picture: on the menu-bar icon it opens or closes the dropdown, in the drawn menu it picks an
     /// item, anywhere else it goes to the app's own views.
+    private func drop(path: String, x: CGFloat, y: CGFloat) -> String? {
+        let cy = y - (hasBar ? Self.bar : 0)
+        let p = NSPoint(x: x, y: window.frame.height - cy)
+        guard let content = window.contentView else { return nil }
+        let board = NSPasteboard(name: NSPasteboard.Name("rig-drop-\(UUID().uuidString)"))
+        board.clearContents()
+        board.writeObjects([URL(fileURLWithPath: path) as NSURL])
+        let types = Set(board.types ?? [])
+        // The view a real drag would reach: of the views under the point that take one of the dragged types, the one
+        // drawn last (on top). SwiftUI's own drop targets are views of their own that take any item and are left out
+        // of hit testing, so they are looked for directly.
+        func all(_ v: NSView) -> [NSView] { [v] + v.subviews.filter { !$0.isHidden }.flatMap(all) }
+        let any: Set<NSPasteboard.PasteboardType> = [NSPasteboard.PasteboardType("public.item"), NSPasteboard.PasteboardType("public.data")]
+        let view = all(content).last { v in
+            let r = Set(v.registeredDraggedTypes)
+            return !r.isEmpty && (!r.isDisjoint(with: types) || !r.isDisjoint(with: any))
+                && v.convert(v.bounds, to: nil).contains(p)
+        }
+        guard let view else { return nil }
+        let info = RigDrag(board: board, at: p, window: window)
+        let target = view
+        let name = "\(Swift.type(of: view))"
+        let entered: NSDragOperation = target.draggingEntered(info)
+        guard entered != [] else { return name + " (refused on entering)" }
+        _ = target.draggingUpdated(info)
+        guard target.prepareForDragOperation(info), target.performDragOperation(info) else {
+            return name + " (refused)"
+        }
+        target.concludeDragOperation(info)
+        return name
+    }
+
     private func click(x: CGFloat, y: CGFloat, right: Bool = false) {
         if hasBar && y < Self.bar {
             guard x >= 6, x <= 64 else { return }
@@ -462,6 +532,40 @@ final class Rig {
             else { problem = "surface must be menubar, dropdown, menu, window or widget" }
         case "/click":
             if let (x, y) = point() { click(x: x, y: y) } else { problem = "give x and y in points" }
+        case "/menu":
+            // A view's right-click menu, without opening it (an open menu holds the app until it closes): its items,
+            // and with pick=<title> that item is carried out. Copies go to the rig's own board, read back here.
+            guard let (x, y) = point() else { problem = "give x and y in points"; break }
+            let cy = y - (hasBar ? Self.bar : 0)
+            let p = NSPoint(x: x, y: window.frame.height - cy)
+            guard let content = window.contentView,
+                  let e = NSEvent.mouseEvent(with: .rightMouseDown, location: p, modifierFlags: [], timestamp: 0,
+                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { break }
+            // A message's own menu first, found as the app finds it for a real right-click.
+            if let m = CopyMessageCatcher.marker(at: p, in: window) {
+                var picked: String?
+                if q["pick"] == "Copy Message" { Clip.board.clearContents(); m.copyMessage(); picked = Clip.board.string(forType: .string) }
+                reply(["ok": true, "items": ["Copy Message"], "copied": picked ?? NSNull()])
+                return
+            }
+            var v = content.hitTest(content.superview?.convert(p, from: nil) ?? p)
+            // Selectable text shows its own text menu, which `menu(for:)` does not report: say so instead of
+            // looking further up (that reported a menu a real right-click does not get: verifier, T-35).
+            if let hit = v, NSStringFromClass(Swift.type(of: hit)).contains("SelectionTextField") {
+                reply(["ok": true, "items": ["(the text's own menu: Look Up, Copy, …)"], "copied": NSNull()])
+                return
+            }
+            var menu: NSMenu?
+            while let view = v, menu == nil { menu = view.menu(for: e); v = view.superview }
+            guard let menu else { reply(["ok": false, "problem": "no right-click menu there"]); return }
+            var picked: String?
+            if let want = q["pick"], let i = menu.items.firstIndex(where: { $0.title == want }) {
+                Clip.board.clearContents()
+                menu.performActionForItem(at: i)
+                picked = Clip.board.string(forType: .string)
+            }
+            reply(["ok": true, "items": menu.items.map(\.title), "copied": picked ?? NSNull()])
+            return
         case "/rightclick":
             if let (x, y) = point() { click(x: x, y: y, right: true) } else { problem = "give x and y in points" }
         case "/hover":
@@ -471,6 +575,14 @@ final class Rig {
             else { problem = "no text with that number in the last list; /look again" }
         case "/type":
             if !type(q["text"] ?? "") { problem = "no field has the caret: click a field first" }
+        case "/drop":
+            // A file dropped at a point: handed to the view AppKit would give it to (the deepest view there that
+            // takes files), with the same calls a real drag makes. It says which view took it.
+            if let (x, y) = point(), let path = q["path"] {
+                let took = drop(path: path, x: x, y: y)
+                reply(["ok": took != nil, "took": took ?? "nothing there takes a file"])
+                return
+            } else { problem = "give x, y and path" }
         case "/scroll":
             if let (x, y) = point(), let dy = q["dy"].flatMap(Double.init) {
                 if !scroll(x: x, y: y, dy: CGFloat(dy)) { problem = "nothing scrolls there" }
@@ -560,4 +672,34 @@ private struct RigWidget: View {
             .clipShape(RoundedRectangle(cornerRadius: 22))
         }
     }
+}
+
+/// A drag the rig makes up: one file, over one point, copying.
+private final class RigDrag: NSObject, NSDraggingInfo {
+    let board: NSPasteboard
+    let at: NSPoint
+    let win: NSWindow
+    init(board: NSPasteboard, at: NSPoint, window: NSWindow) { self.board = board; self.at = at; self.win = window }
+    var draggingDestinationWindow: NSWindow? { win }
+    var draggingSourceOperationMask: NSDragOperation { [.copy, .generic, .link] }
+    var draggingLocation: NSPoint { at }
+    var draggedImageLocation: NSPoint { at }
+    var draggedImage: NSImage? { nil }
+    var draggingPasteboard: NSPasteboard { board }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?,
+                                classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                                using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {
+        var stop: ObjCBool = false
+        for (i, item) in (board.pasteboardItems ?? []).enumerated() where !stop.boolValue {
+            block(NSDraggingItem(pasteboardWriter: item), i, &stop)
+        }
+    }
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
 }

@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import ImageIO
+import Network
 @testable import ClockOfficeCore
 
 // MARK: helpers
@@ -640,7 +641,10 @@ func readUntilClosed(port: UInt16, timeout: Int = 3) -> String {
     try door.start(port: port)
     defer { door.stop() }
     for _ in 0..<100 { if case .failed = door.door { break }; try await Task.sleep(nanoseconds: 20_000_000) }
-    #expect(door.door == .failed("another program is using its port"), "state: \(door.door)")
+    // The holder here is this test process itself, named as the system names it.
+    guard case .failed(let why) = door.door else { Issue.record("state: \(door.door)"); return }
+    #expect(why.hasSuffix("is using the connection it needs"), "reason: \(why)")
+    #expect(!why.contains("POSIX") && !why.contains("port"))
     // A free port: the same door says it listens.
     let probe = SnapshotServer()
     let free = try await probe.startOnFreePort()
@@ -652,6 +656,35 @@ func readUntilClosed(port: UInt16, timeout: Int = 3) -> String {
     #expect(ok.door == .listening)
     ok.stop()
     #expect(ok.door == .stopped)
+}
+
+@Test func tryAgainRightAfterAWorkingDoorDoesNotBlameAnotherApp() async throws {
+    // Stop and start at once on the same port, as "Try again" does: the old listener may still be closing.
+    let probe = SnapshotServer()
+    let port = try await probe.startOnFreePort()
+    probe.stop()
+    try await Task.sleep(nanoseconds: 100_000_000)
+    let door = SnapshotServer()
+    defer { door.stop() }
+    for _ in 0..<20 {
+        try door.start(port: port)
+        for _ in 0..<150 { if door.door == .listening { break }; if case .failed = door.door { break }; try await Task.sleep(nanoseconds: 20_000_000) }
+        #expect(door.door == .listening, "state after a quick restart: \(door.door)")
+        door.stop()
+    }
+}
+
+@Test func theDoorsReasonsAreInPlainWords() {
+    #expect(SnapshotServer.why(NWError.posix(.EADDRINUSE)) == "another app is using the connection it needs")
+    #expect(SnapshotServer.why(NWError.posix(.EADDRNOTAVAIL)) == "it could not open its connection (error 49)")
+    // The path where setting up the door throws (verifier 1 of T-43): the same plain words, never system text.
+    #expect(SnapshotServer.why(POSIXError(.EINVAL)) == "it could not open its connection (error 22)")
+    #expect(SnapshotServer.why(NSError(domain: "x", code: 1)) == "it could not open its connection")
+    #expect(SnapshotServer.why(nil) == "it could not open its connection")
+    for e: Error in [NWError.posix(.EACCES), POSIXError(.EINVAL), NWError.dns(-1)] {
+        let w = SnapshotServer.why(e)
+        #expect(!w.contains("POSIX") && !w.contains("rawValue") && !w.contains("port"), "\(w)")
+    }
 }
 
 @Test func invisibleCharactersFromPastedTextAreTidiedNotRefused() {

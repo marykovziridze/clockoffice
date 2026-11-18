@@ -205,6 +205,19 @@ public final class SnapshotServer: @unchecked Sendable {
     }
 
     public func start(port: UInt16 = Snapshot.port) throws {
+        lock.lock(); generation += 1; let gen = generation; lock.unlock()
+        setDoor(.starting, port: port, generation: gen)
+        try listen(port: port, generation: gen, attempt: 0)
+    }
+
+    /// Bumped by every start and stop, so a retry scheduled for an older start does nothing.
+    private var generation = 0
+    /// A port that is still in use is tried this many times, 0.2 s apart, before the door says it failed: right
+    /// after a stop (Try again, a quick restart) the door's own old listener can still be closing, and blaming
+    /// "another app" for it was wrong 8 times in 30 (verifier 1 of T-41).
+    static let busyRetries = 5
+
+    private func listen(port: UInt16, generation gen: Int, attempt: Int) throws {
         let params = NWParameters.tcp
         // Bound to 127.0.0.1 itself, not to every address with a filter on top.
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!)
@@ -218,20 +231,30 @@ public final class SnapshotServer: @unchecked Sendable {
         }
         // Whether the door really listens. A port another program holds makes the listener fail after start()
         // has already returned, so this is the only place the failure shows (T-41).
-        setDoor(.starting, port: port)
         l.stateUpdateHandler = { [weak self, weak l] state in
             guard let self else { return }
+            self.lock.lock(); let current = self.generation == gen; self.lock.unlock()
+            guard current else { l?.cancel(); return }
             switch state {
-            case .ready: self.setDoor(.listening, port: port)
-            case .failed(let e):
-                self.setDoor(.failed(Self.why(e)), port: port)
+            case .ready: self.setDoor(.listening, port: port, generation: gen)
+            case .failed(let e), .waiting(let e):
                 l?.cancel()
-            case .waiting(let e): self.setDoor(.failed(Self.why(e)), port: port)
+                if case .posix(.EADDRINUSE) = e, attempt < Self.busyRetries {
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                        guard let self else { return }
+                        self.lock.lock(); let still = self.generation == gen; self.lock.unlock()
+                        guard still else { return }
+                        do { try self.listen(port: port, generation: gen, attempt: attempt + 1) }
+                        catch { self.setDoor(.failed(Self.why(error)), port: port, generation: gen) }
+                    }
+                } else {
+                    self.setDoor(.failed(Self.why(e, port: port)), port: port, generation: gen)
+                }
             default: break
             }
         }
         l.start(queue: .global(qos: .utility))
-        listener = l
+        lock.lock(); listener = l; lock.unlock()
     }
 
     /// The door's state, as the app shows it.
@@ -245,18 +268,42 @@ public final class SnapshotServer: @unchecked Sendable {
         set { lock.lock(); doorState = newValue; lock.unlock() }
     }
     private var doorState: Door = .stopped
-    public private(set) var doorPort: UInt16 = 0
+    private var doorPortValue: UInt16 = 0
+    /// The port the door was last started on (read under the lock: verifier 1 of T-41).
+    public var doorPort: UInt16 { lock.lock(); defer { lock.unlock() }; return doorPortValue }
     /// Called (on a background queue) when the door's state changes.
     public var onDoorChange: (@Sendable (Door) -> Void)?
 
-    private func setDoor(_ d: Door, port: UInt16) {
-        lock.lock(); let changed = doorState != d; doorState = d; doorPort = port; lock.unlock()
+    /// Sets the door's state only for the current start: a report from an older start (one already stopped or
+    /// replaced) is dropped here, under the same lock that `stop()` bumps the generation with (verifier 1 of T-43:
+    /// once in 3000 quick stops a late "listening" arrived after stop had returned).
+    private func setDoor(_ d: Door, port: UInt16, generation gen: Int? = nil) {
+        lock.lock()
+        if let gen, gen != generation { lock.unlock(); return }
+        let changed = doorState != d; doorState = d; doorPortValue = port
+        lock.unlock()
         if changed { onDoorChange?(d) }
     }
 
-    static func why(_ e: NWError) -> String {
-        if case .posix(let code) = e, code == .EADDRINUSE { return "another program is using its port" }
-        return "\(e)"
+    /// The reason in plain words, never the system's own error text (her rule: no jargon on screen). For a port
+    /// in use it names the app that holds it when the system says which one.
+    public static func why(_ error: Error?, port: UInt16? = nil) -> String {
+        if case .posix(let code)? = error as? NWError ?? (error as? POSIXError).map({ NWError.posix($0.code) }) {
+            if code == .EADDRINUSE {
+                if let port, let app = holder(of: port) { return "\(app) is using the connection it needs" }
+                return "another app is using the connection it needs"
+            }
+            return "it could not open its connection (error \(code.rawValue))"
+        }
+        return "it could not open its connection"
+    }
+
+    /// The name of the program listening on this port, as lsof reports it ("Python", "node"); nil when unknown.
+    static func holder(of port: UInt16) -> String? {
+        let out = Shell.run("/usr/sbin/lsof", ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-Fc"], timeout: 2).stdout
+        guard let line = out.split(separator: "\n").first(where: { $0.hasPrefix("c") }) else { return nil }
+        let name = String(line.dropFirst()).trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : name
     }
 
     private func accept(_ conn: NWConnection) {
@@ -270,7 +317,12 @@ public final class SnapshotServer: @unchecked Sendable {
             read(conn, Data())
     }
 
-    public func stop() { permissions.releaseAll(); listener?.cancel(); listener = nil; setDoor(.stopped, port: doorPort) }
+    public func stop() {
+        permissions.releaseAll()
+        lock.lock(); generation += 1; let l = listener; listener = nil; let port = doorPortValue; lock.unlock()
+        l?.cancel()
+        setDoor(.stopped, port: port)
+    }
 
     /// Starts on a port the system picks and nothing else holds, and returns it once the server listens. For tests:
     /// fixed ports clashed with other tests and other sessions' app copies (T-37).
@@ -298,7 +350,7 @@ public final class SnapshotServer: @unchecked Sendable {
             }
             l.start(queue: .global(qos: .utility))
         }
-        listener = l
+        lock.withLock { listener = l }
         return port
     }
 

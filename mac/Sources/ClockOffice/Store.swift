@@ -292,12 +292,13 @@ final class Store {
     private(set) var doorProblem: String?
 
     private func openDoor() {
-        do { try server.start() } catch { takeDoor(.failed("\(error)")) }
+        do { try server.start() } catch { takeDoor(.failed(SnapshotServer.why(error))) }
     }
 
     private func takeDoor(_ door: SnapshotServer.Door) {
         let next: String?
-        if case .failed(let why) = door { next = "The widget, dialog words and usage are off: \(why) (\(server.doorPort))." } else { next = nil }
+        // Plain words: what stops working and why. No port number: it means nothing to act on.
+        if case .failed(let why) = door { next = "ClockOffice can't connect: \(why). The widget, Allow/Deny and the usage line are off." } else { next = nil }
         if next != doorProblem { doorProblem = next }
     }
 
