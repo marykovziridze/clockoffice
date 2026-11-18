@@ -20,7 +20,7 @@ import ClockOfficeUI
 //   /hover?x=…&y=…        moves the pointer there without clicking
 //   /press?n=…            clicks the middle of text n of the last list
 //   /type?text=…          types into the field that has the caret (click a field first)
-//   /key?name=…           return, escape, tab, up, down, cmd (hold), cmd-release, cmd+1 … cmd+9, cmd+o, cmd+w
+//   /key?name=…           return, shift+return, escape, tab, up, down, cmd (hold), cmd-release, cmd+1 … cmd+9, cmd+o, cmd+w
 //
 // The rig's window sits on the screen but fully transparent and outside Mission Control. (It used to be parked
 // 20,000 points off screen, and Mission Control shrank every window into a pile to fit that in.)
@@ -429,6 +429,7 @@ final class Rig {
         var mods: NSEvent.ModifierFlags = []
         var base = n
         if n.hasPrefix("cmd+") { mods = .command; base = String(n.dropFirst(4)) }
+        if n.hasPrefix("shift+") { mods = .shift; base = String(n.dropFirst(6)) }
         let arrow = { (c: Int) in String(UnicodeScalar(c)!) }
         let codes: [String: (UInt16, String)] = [
             "return": (36, "\r"), "escape": (53, "\u{1b}"), "esc": (53, "\u{1b}"), "tab": (48, "\t"),
@@ -484,7 +485,7 @@ final class Rig {
             }
             return
         case "/key":
-            if !key(q["name"] ?? "") { problem = "name must be return, escape, tab, up, down, cmd, cmd-release, cmd+1 … cmd+9, cmd+o or cmd+w" }
+            if !key(q["name"] ?? "") { problem = "name must be return, shift+return, escape, tab, up, down, cmd, cmd-release, cmd+1 … cmd+9, cmd+o or cmd+w" }
         default: problem = "unknown request; use /look /open /click /rightclick /hover /press /type /key /scroll /film"
         }
         if let problem {

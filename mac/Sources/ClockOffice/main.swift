@@ -239,6 +239,19 @@ enum Keys {
             if surface.kind == .window { surface.show(list[next].id) } else { surface.selected = list[next].id }
             return nil
         case 36, 76: // Return: with nothing typed, open the selected row
+            // Shift+Return in a message box starts a new line where the caret is, as in common chat apps; Return
+            // alone still sends. (It sent: T-31.)
+            if event.modifierFlags.contains(.shift), !command {
+                // Text an input method is still composing (Japanese, Chinese, an accent key) is the input method's:
+                // the key goes on to it, which confirms that text. Taking it here deleted it (verifier, T-31).
+                guard let field = (event.window ?? NSApp.keyWindow)?.firstResponder as? NSTextView,
+                      surface.focusedReply != nil, !field.hasMarkedText() else {
+                    // Shift+Return outside a message box does nothing (it opened the selected row, as Return does).
+                    return surface.focusedReply == nil ? nil : event
+                }
+                field.insertNewlineIgnoringFieldEditor(nil)
+                return nil
+            }
             if surface.kind == .panel, surface.detail == nil, let id = surface.selected,
                (surface.focusedReply.map { (store.drafts[$0] ?? "").isEmpty } ?? true) {
                 surface.open(id)
@@ -260,6 +273,7 @@ enum Keys {
         if chars == "o", let s = surface.target(store) { store.openWindow(s); return nil }
         if let n = Int(chars), (1...9).contains(n), let s = surface.target(store),
            store.canReply(s), !store.canDecide(s), n <= s.options.count {
+            Undone.markIfTakingBack(s, s.options[n - 1], store: store)
             store.answer(s, s.options[n - 1]) { ok in if ok { surface.afterSend(s.id) } }
             return nil
         }

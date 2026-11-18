@@ -353,6 +353,7 @@ struct OptionRow: View {
             ForEach(Array(session.options.enumerated()), id: \.offset) { n, o in
                 AnswerPill(title: o.label, key: mine && n < 9 ? String(n + 1) : nil,
                            chosen: store.waiting(session)?.contains { $0.send == o.send } ?? false) {
+                    Undone.markIfTakingBack(session, o, store: store)
                     store.answer(session, o) { ok in if ok { surface.afterSend(session.id) } }
                 }
             }
@@ -430,7 +431,7 @@ struct AnswerArea: View {
                     .font(Theme.small).foregroundStyle(theme.sub).lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 8)
-                LinkButton("Undo") { store.undo(session.id) }
+                LinkButton("Undo") { Undone.mark(session.id); store.undo(session.id) }
                     .help("Take this answer back: nothing is sent")
             }
             .padding(.leading, 16).padding(.trailing, 16).padding(.vertical, 6)
@@ -566,9 +567,48 @@ struct UsageLines: View {
 // MARK: Rows
 
 /// A question in the dropdown: who asks, for how long, what, and the quickest way to answer.
+/// Which sessions' one-click answers the user just took back with Undo (so a card can tell Undo from the answer
+/// going out: both end the wait the same way).
+@MainActor enum Undone {
+    private static var at: [String: Date] = [:]
+    static func mark(_ id: String) { at[id] = Date() }
+    static func just(_ id: String) -> Bool { at[id].map { Date().timeIntervalSince($0) < 1 } ?? false }
+    /// Clicking the only chosen answer again takes it back too (the store's answer does an Undo then): marked the
+    /// same way (verifier 7, T-28).
+    static func markIfTakingBack(_ s: Session, _ o: ReplyOption, store: Store) {
+        if let w = store.waiting(s), w.count == 1, w[0].send == o.send { mark(s.id) }
+    }
+}
+
 struct QuestionRow: View {
     let session: Session
+    /// The user's typed answer went out: for a moment the card says so in the message box's place, then it folds
+    /// away (SessionList).
+    var sent: String? = nil
     let open: () -> Void
+    /// How tall the answers and message box were, so the Sent state takes exactly their room.
+    @State private var answersHeight: CGFloat = 0
+    /// The height while a one-click answer waited, and whether the answer that went out was one.
+    @State private var choiceHeight: CGFloat = 0
+    @State private var fromChoice = false
+    /// A one-click answer has just left its wait and is being typed into the session.
+    @State private var holding = false
+    @State private var holdTurn = 0
+
+    private var sentHeight: CGFloat? {
+        let h = fromChoice && choiceHeight > 0 ? choiceHeight : answersHeight
+        return h > 0 ? h : nil
+    }
+
+    /// The choices show on the Sent card exactly when they showed on the open one.
+    private var showsChoices: Bool {
+        !session.options.isEmpty && (store.canDecide(session) ? session.headline == session.question : store.canReply(session))
+    }
+
+    /// What went out, in the user's words: a dialog's choice is typed as its number, so its label is shown instead.
+    private func said(_ sent: String) -> String {
+        session.options.first { $0.send == sent }?.label ?? sent
+    }
     @Environment(Store.self) private var store
     @Environment(\.theme) private var theme
     @Environment(SurfaceModel.self) private var surface
@@ -618,8 +658,62 @@ struct QuestionRow: View {
             .help("See the conversation")
             .accessibilityLabel("Conversation: \(session.title)")
 
-            AnswerArea(session: session, compact: true)
-                .padding(.leading, 56).padding(.trailing, 12)
+            Group {
+                if let sent {
+                    // The card keeps its exact height (a five-line answer turned into one line and the list jumped
+                    // 96 points: verifier, T-28): the choices stay, dimmed, and the words that went out fill the
+                    // message box's shape, at the height the answers had.
+                    VStack(alignment: .leading, spacing: 10) {
+                        if showsChoices { OptionRow(session: session).disabled(true).opacity(0.4) }
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(theme.sub)
+                                .padding(.top, 3)
+                            // Fits the room the answers had, however small (a dialog has no message box): it is
+                            // cut short rather than drawn over the next card.
+                            Text(said(sent)).font(Theme.small).foregroundStyle(theme.sub)
+                                .lineLimit(6).truncationMode(.tail)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 16).padding(.vertical, 12)
+                        .frame(maxHeight: .infinity, alignment: .topLeading)
+                        .background(theme.composer, in: RoundedRectangle(cornerRadius: 21, style: .circular))
+                        .accessibilityLabel("Sent: \(said(sent))")
+                    }
+                    .frame(height: sentHeight, alignment: .top)
+                    .clipped()
+                } else {
+                    AnswerArea(session: session, compact: true)
+                        // In the instant between a one-click answer's wait and its going out the card is drawn
+                        // without its "Sending" line; it keeps that line's room meanwhile (verifiers 3-5, T-28).
+                        .frame(minHeight: holding ? choiceHeight : nil, alignment: .top)
+                        // The answers' height, every change, until the answer counts as sent (sending empties the
+                        // box in that same moment). While a one-click answer waits, its height is kept apart: the
+                        // Sent card then takes that one, whatever is measured in the instant after.
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                            guard store.sentText(session) == nil else { return }
+                            if store.waiting(session) != nil { choiceHeight = h }
+                            if !holding { answersHeight = h }
+                        }
+                        .onChange(of: store.waiting(session) != nil) { was, now in
+                            if now { fromChoice = true }
+                            guard was, !now, store.sentText(session) == nil else { return }
+                            // Taken back with Undo: back to the open card at once, with its own height (holding it
+                            // made the card step back 1.5 s later, and a typed answer after it took the one-click
+                            // height: verifier 6, T-28).
+                            if Undone.just(session.id) { fromChoice = false; return }
+                            // Going out: the card keeps the "Sending" room until it counts as sent, or until the
+                            // send fails (its error line shows), however long that takes.
+                            holding = true
+                            holdTurn += 1
+                            let turn = holdTurn
+                            // A safety net only; an earlier wait's net must not end a later wait's hold (verifier 7).
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { if holdTurn == turn { holding = false } }
+                        }
+                        .onChange(of: store.error(session)) { _, e in if e != nil { holding = false; fromChoice = false } }
+                        .onChange(of: store.drafts[session.id] ?? "") { _, _ in fromChoice = false }
+                }
+            }
+            .padding(.leading, 56).padding(.trailing, 12)
         }
         .padding(.bottom, 14)
         // The row the arrow keys are on: the band covers the whole card, answers and message box included
@@ -802,9 +896,27 @@ struct SessionList: View {
     @Environment(Store.self) private var store
     @Environment(SurfaceModel.self) private var surface
     @Environment(\.theme) private var theme
+    /// A card whose answer just went out stays a moment, saying "Sent", then folds away. (It went at once, and the
+    /// list jumped up with rows drawn over each other: T-28.) Worked out from the store on every draw, so there is
+    /// no frame in which the card is gone before it comes back.
+    private static let linger = 0.9
+    /// Draws the list again when a card's moment is over.
+    @State private var tick = 0
+
+    private func lingering(_ s: Session, at now: Date) -> Bool {
+        // Only a question's card stays: a message sent to a working or finished session showed up as a card for a
+        // moment, and the cards below moved down and back (verifier, T-28). A sent session keeps the state it had
+        // when the answer went out, so this is the state it was answered in.
+        guard s.state == .asking, store.sentText(s) != nil, let at = store.sentAt(s) else { return false }
+        return now.timeIntervalSince(at) < Self.linger
+    }
 
     var body: some View {
-        let asking = store.asking, sent = store.justSent
+        let now = Date()
+        let _ = tick
+        let staying = store.justSent.filter { lingering($0, at: now) }
+        let asking = (store.asking + staying).sorted { $0.since < $1.since }
+        let sent = store.justSent.filter { !lingering($0, at: now) }
         let rest = store.working + store.done
         VStack(alignment: .leading, spacing: 0) {
             if !store.staleWindows.isEmpty {
@@ -822,19 +934,33 @@ struct SessionList: View {
             // missing padding was the list slipped up by 8 points (the scroll gap fixed in PanelBody).
             ForEach(asking) { s in
                 VStack(spacing: 0) {
-                    QuestionRow(session: s) { surface.open(s.id) }
+                    QuestionRow(session: s, sent: store.asking.contains { $0.id == s.id } ? nil : (store.sentText(s) ?? "")) { surface.open(s.id) }
                     // Clear of the card above and below by the same amount, so a highlighted card never touches it.
                     Rectangle().fill(theme.hair).frame(height: 1).padding(.horizontal, 12).padding(.vertical, 5)
                 }
-                .transition(.opacity)
+                // A card goes by fading first, quickly, and only then does the list close up: two layers of text
+                // never sit on top of each other.
+                // A card that has had its moment goes at once and the list closes up on the dropdown's own slide,
+                // which starts at the same moment. (Faded first, the list started 80 ms after the dropdown and the
+                // last rows were cut off for a frame: verifier, T-28.)
+                .transition(.asymmetric(insertion: .opacity, removal: .opacity.animation(.linear(duration: 0.001))))
             }
             // Everything that does not ask, under its folder's name.
             ForEach(store.folders(sent + rest)) { folder in
-                if store.manyFolders { FolderHeading(name: folder.name, edge: 15) } // 12 row padding + (32 dial column - 26 dial) / 2
+                if store.manyFolders {
+                    FolderHeading(name: folder.name, edge: 15) // 12 row padding + (32 dial column - 26 dial) / 2
+                        .transition(Motion.reduced ? .opacity
+                                    : .asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.12).delay(0.3)),
+                                                  removal: .opacity.animation(.easeOut(duration: 0.08))))
+                }
                 ForEach(folder.sessions) { s in
                     QuietRow(session: s, sentText: store.sentText(s), sentAt: store.sentAt(s), selected: surface.selected == s.id,
                              grouped: true, limited: store.limited(s)) { surface.open(s.id) }
-                        .transition(.opacity)
+                        // A row that arrives (a folded card's session) fades in once the list has closed up around
+                        // it, not while rows are still travelling past it.
+                        .transition(Motion.reduced ? .opacity
+                                    : .asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.12).delay(0.3)),
+                                                  removal: .opacity.animation(.easeOut(duration: 0.08))))
                 }
             }
             // The foot: what is about the app, not about a session. A hairline sets it apart from the list
@@ -852,6 +978,13 @@ struct SessionList: View {
         }
         .animation(Motion.push, value: asking.map(\.id))
         .animation(Motion.push, value: (sent + rest).map(\.id))
+        .onChange(of: store.justSent.map(\.id)) { _, _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.linger + 0.02) { tick += 1 }
+        }
+        // Opened again while a card is in its moment: this list needs its own reminder to fold it.
+        .onAppear {
+            if !store.justSent.isEmpty { DispatchQueue.main.asyncAfter(deadline: .now() + Self.linger + 0.02) { tick += 1 } }
+        }
     }
 }
 
