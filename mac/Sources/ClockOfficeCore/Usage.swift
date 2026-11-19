@@ -120,6 +120,14 @@ public enum UsageWords {
         let week = live(u.weekPercent, u.weekResets).map { p in (p, "week \(Int(p.rounded()))%") }
         return (session, week)
     }
+
+    /// Which part to keep when only one fits: the session part, unless the week is high (80% or more) and fuller than
+    /// the session. A used-up week must never be dropped for a session line that reads as room left.
+    public static func keepWeek(session: Double?, week: Double?) -> Bool {
+        guard let week else { return false }
+        guard let session else { return true }
+        return isHigh(week) && week > session
+    }
 }
 
 /// The relay that lets the app see what Claude Code tells the status line. It stands in front of the user's own status

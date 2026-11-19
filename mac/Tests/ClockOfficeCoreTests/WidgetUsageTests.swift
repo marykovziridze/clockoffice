@@ -36,3 +36,15 @@ private func at(_ h: Int, _ m: Int, day: Int = 18) -> Date { cal.date(from: Date
     let old = try Snapshot.decoder.decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: json))
     #expect(old.usage == nil)
 }
+
+@Test func aShortenedLineKeepsAFullWeek() {
+    // T-50 (T-13 verifier F1): session 40%, week 100% beside "+11 more sessions" showed only "40% used".
+    #expect(UsageWords.keepWeek(session: 40, week: 100))
+    #expect(UsageWords.keepWeek(session: 40, week: 85))
+    // An ordinary week stays out of the short line; the session leads when it is as full or fuller.
+    #expect(!UsageWords.keepWeek(session: 40, week: 24))
+    #expect(!UsageWords.keepWeek(session: 95, week: 90))
+    #expect(!UsageWords.keepWeek(session: 100, week: 100))
+    #expect(!UsageWords.keepWeek(session: 40, week: nil))
+    #expect(UsageWords.keepWeek(session: nil, week: 30))
+}

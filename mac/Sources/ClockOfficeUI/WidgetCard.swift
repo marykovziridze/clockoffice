@@ -174,9 +174,10 @@ public struct WidgetCard: View {
                 if let more {
                     ViewThatFits(in: .horizontal) {
                         HStack { more; Spacer(minLength: 12); usage.lineLimit(1).fixedSize() }
-                        // Short of room: the session part only ("62% used · resets 17:01").
-                        if let session = usageText(sessionOnly: true)?.foregroundStyle(theme.sub).monospacedDigit() {
-                            HStack { more; Spacer(minLength: 12); session.lineLimit(1).fixedSize() }
+                        // Short of room: one part only, the session ("62% used · resets 17:01") unless the week is
+                        // high and fuller ("week 100%").
+                        if let one = usageText(onePart: true)?.foregroundStyle(theme.sub).monospacedDigit() {
+                            HStack { more; Spacer(minLength: 12); one.lineLimit(1).fixedSize() }
                         }
                         more.frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -190,12 +191,15 @@ public struct WidgetCard: View {
 
     /// The usage line, nil until Claude Code has reported (or once both windows have reset). A number of 80% or
     /// more is in ink, a used-up one in the limit's red, as in the dropdown.
-    private var usageText: Text? { usageText(sessionOnly: false) }
+    private var usageText: Text? { usageText(onePart: false) }
 
-    private func usageText(sessionOnly: Bool) -> Text? {
+    private func usageText(onePart: Bool) -> Text? {
         guard snapshot.live else { return nil }
         var p = UsageWords.short(snapshot.usage, now: now)
-        if sessionOnly { guard p.session != nil else { return nil }; p.week = nil }
+        if onePart {
+            guard p.session != nil, p.week != nil else { return nil } // one part is the full line already
+            if UsageWords.keepWeek(session: p.session?.percent, week: p.week?.percent) { p.session = nil } else { p.week = nil }
+        }
         func part(_ x: (percent: Double, text: String)) -> Text {
             let high = UsageWords.isHigh(x.percent)
             guard high else { return Text(x.text) }
