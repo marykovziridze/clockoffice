@@ -9,6 +9,9 @@ public struct TranscriptTail: Sendable {
     /// The last text Claude wrote in the main thread, unless the user has typed since.
     public var lastAssistantText: String?
     public var lastAssistantAt: Date?
+    /// True when Claude went on working after that text (a tool call or its result came later): the text is not
+    /// its last word, so a question in it was answered some other way (a peer's relayed answer, T-49).
+    public var workedAfterText: Bool = false
     /// A tool call that has no result yet: what a dialog or permission prompt is about.
     public var pendingToolName: String?
     public var pendingToolInput: [String: AnySendable]?
@@ -74,6 +77,7 @@ public enum Transcript {
     static func scan(_ lines: [Data.SubSequence]) -> TranscriptTail {
         var out = TranscriptTail()
         var toolResultSeen = false
+        var toolCallSeen = false
         var decided = false
         for raw in lines.reversed() {
             // Cheap pre-filter: most lines are request blobs and attachments.
@@ -114,7 +118,13 @@ public enum Transcript {
                 if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     out.lastAssistantText = text
                     out.lastAssistantAt = (o["timestamp"] as? String).flatMap { iso.date(from: $0) }
+                    // A tool call later in this same message counts too: the words came before the work.
+                    let lastText = blocks.lastIndex { $0["type"] as? String == "text" } ?? 0
+                    let callAfter = blocks[(lastText + 1)...].contains { $0["type"] as? String == "tool_use" }
+                    out.workedAfterText = toolResultSeen || toolCallSeen || callAfter
                     decided = true
+                } else if blocks.contains(where: { $0["type"] as? String == "tool_use" }) {
+                    toolCallSeen = true
                 }
             default:
                 continue

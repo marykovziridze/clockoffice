@@ -170,6 +170,47 @@ func classifierCraftedEndings(text: String, asks: Bool) {
 
 // MARK: the Claude Code source
 
+/// A peer session's message as Claude Code writes it: a meta line, not the user speaking.
+func peerMessage(_ body: String) -> String {
+    line(["type": "user", "isMeta": true, "origin": ["kind": "peer", "name": "docs-3e", "body": body],
+          "message": ["role": "user", "content": [["type": "text", "text": "Another Claude session sent a message:\n" + body]]]])
+}
+
+@Test func aQuestionClaudeWorkedOnAfterIsNoLongerAsked() {
+    // T-49, as in a real handover session (2026-11-18): a question, a peer's relayed answer, tool calls, and the turn
+    // ending on a SendMessage call with no new words.
+    let home = FakeHome()
+    let question = assistantText("The handbook is ready. Should I upload it to SharePoint now?")
+    home.add("relayed", status: "idle", transcript: [userTyped("go"), question, peerMessage("The user says go ahead."),
+                                                     assistantTool("SendMessage", ["to": "docs-3e"]), toolResult()])
+    home.add("called", status: "idle", transcript: [userTyped("go"), question, assistantTool("Bash", ["command": "ls"])])
+    home.add("sameMessage", status: "idle", transcript: [userTyped("go"), line(["type": "assistant", "message": ["role": "assistant",
+        "content": [["type": "text", "text": "Should I upload it now? Checking the folder first."],
+                    ["type": "tool_use", "id": "t1", "name": "Bash", "input": ["command": "ls"]]]]]), toolResult()])
+    home.add("still", status: "idle", transcript: [userTyped("go"), assistantTool("Bash", ["command": "ls"]), toolResult(), question])
+    home.add("peerOnly", status: "idle", transcript: [userTyped("go"), question, peerMessage("FYI: main moved.")])
+    let by = Dictionary(uniqueKeysWithValues: ClaudeCodeSource(home: home.path).sessions().map { ($0.id, $0) })
+    for id in ["relayed", "called", "sameMessage"] {
+        #expect(by[id]?.state == .done, "\(id): worked on after the question, so not Waiting")
+        #expect(by[id]?.options.isEmpty == true && by[id]?.question == nil, "\(id): no old answer buttons")
+    }
+    #expect(by["relayed"]?.lastText?.contains("SharePoint") == true, "its last words are still shown")
+    // Work before the question, or only a peer's note after it (no work yet): still a question for her.
+    #expect(by["still"]?.state == .asking)
+    #expect(by["peerOnly"]?.state == .asking)
+    #expect(by["relayed"]?.revision != by["still"]?.revision)
+    // With summaries on (the default), a cached summary that reads the old words as a question changes nothing
+    // (verifier 1 of T-49: it brought Waiting and the buttons back).
+    let summary = Summary(asks: true, headline: "Upload now?", question: "Should I upload it now?", options: ["Yes", "No"],
+                          inShort: "The handbook is ready.", did: "Built the handbook.")
+    for id in ["relayed", "called", "sameMessage"] {
+        let shown = by[id]!.applying(summary)
+        #expect(shown.state == .done && shown.options.isEmpty && shown.question == nil, "\(id) with a summary: \(shown.state)")
+        #expect(shown.inShort == "The handbook is ready.", "the summary's words are still used")
+    }
+    #expect(by["still"]!.applying(summary).state == .asking)
+}
+
 @Test func officialStatusDecidesAndOnlyIdleSessionsAreRead() {
     let home = FakeHome()
     home.add("busy", status: "busy", transcript: [assistantText("Shall I merge?"), line(["type": "last-prompt", "lastPrompt": "fix the footer"])])
@@ -716,13 +757,66 @@ func readUntilClosed(port: UInt16, timeout: Int = 3) -> String {
 @Test func aProgramThatIgnoresTheStopIsEndedAtItsTimeout() {
     // A stuck helper (a hung lsof) must not hold its caller past the timeout (verifier 2 of T-43: 10 s).
     let started = Date()
-    _ = Shell.run("/bin/sh", ["-c", "trap '' TERM; sleep 30"], timeout: 1)
+    // exec: the shell becomes the sleep, so the kill ends it (a forked sleep was left behind once per run: T-47).
+    _ = Shell.run("/bin/sh", ["-c", "trap '' TERM; exec sleep 30"], timeout: 1)
     #expect(Date().timeIntervalSince(started) < 4, "took \(Date().timeIntervalSince(started)) s")
+}
+
+@Test func aProgramWhoseChildKeepsItsOutputOpenStillGivesWhatItWrote() {
+    // A child that outlives the program holds its output open (verifier 1 of T-46): the words written before the
+    // timeout are kept, and nothing waits on the child afterwards.
+    let started = Date()
+    let r = Shell.run("/bin/sh", ["-c", "trap '' TERM; sleep 30 & echo $!; exec sleep 30"], timeout: 1)
+    let took = Date().timeIntervalSince(started)
+    #expect(took < 4, "took \(took) s")
+    if let pid = Int32(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) { kill(pid, SIGKILL) } // no orphan
+    #expect(Int32(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) != nil, "what it wrote: \(r.stdout.debugDescription)")
+}
+
+@Test func aQuickProgramReturnsQuickly() {
+    // The app runs a few helpers every 3 s: waiting for the exit used to add about 70 ms to each (verifier 1 of T-47).
+    var took: [Double] = []
+    for _ in 0..<11 { let a = Date(); _ = Shell.run("/usr/bin/true", []); took.append(Date().timeIntervalSince(a)) }
+    #expect(took.sorted()[5] < 0.04, "median \(took.sorted()[5]) s")
+    #expect(Shell.run("/bin/sh", ["-c", "exit 3"]).status == 3, "the exit status still arrives")
+}
+
+@Test func twoStopsInARowStillEndOnStopped() async throws {
+    final class Seen: @unchecked Sendable { let lock = NSLock(); var all: [SnapshotServer.Door] = [] }
+    let seen = Seen()
+    let door = SnapshotServer()
+    door.onDoorChange = { d in seen.lock.withLock { seen.all.append(d) } }
+    let probe = SnapshotServer()
+    let port = try await probe.startOnFreePort()
+    probe.stop()
+    try door.start(port: port)
+    for _ in 0..<100 { if door.door == .listening { break }; try await Task.sleep(nanoseconds: 10_000_000) }
+    door.doorEventsDelivered()
+    door.stop(); door.stop()
+    door.doorEventsDelivered()
+    let told = seen.lock.withLock { seen.all }
+    #expect(told.last == .stopped, "told: \(told)")
+}
+
+@Test func aDoorThatCannotBeSetUpSaysSoAfterStarting() throws {
+    // start() throws; its own "starting" is told after it returns and must not cover the failure (verifier 1 of T-46).
+    final class Seen: @unchecked Sendable { let lock = NSLock(); var all: [SnapshotServer.Door] = [] }
+    let seen = Seen()
+    let door = SnapshotServer()
+    door.onDoorChange = { d in seen.lock.withLock { seen.all.append(d) } }
+    door.setupFailure = POSIXError(.EACCES)
+    #expect(throws: (any Error).self) { try door.start(port: 1) }
+    door.doorEventsDelivered()
+    let told = seen.lock.withLock { seen.all }
+    let failed = SnapshotServer.Door.failed(SnapshotServer.why(POSIXError(.EACCES)))
+    #expect(told.last == failed, "told: \(told)")
+    #expect(door.door == failed)
 }
 
 @Test func programNamesAreShownCleanly() {
     #expect(SnapshotServer.cleanName("Python") == "Python")
     #expect(SnapshotServer.cleanName("two\\nlines") == "two lines")
+    #expect(SnapshotServer.cleanName("path\\\\name") == "path name", "an escaped backslash keeps the letter after it")
     #expect(SnapshotServer.cleanName("ClockOffi") == "ClockOffice")
     #expect(SnapshotServer.cleanName("  ") == nil)
     #expect(SnapshotServer.cleanName(String(repeating: "a", count: 80))?.count == 32)

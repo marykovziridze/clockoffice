@@ -115,7 +115,7 @@ public extension Session {
         if !m.inShort.isEmpty { s.inShort = m.inShort }
         if !m.did.isEmpty { s.lastDid = m.did }
         guard !certain, state != .working else { return s }
-        if m.asks {
+        if m.asks, !movedOn {
             s.state = .asking
             s.question = m.question.isEmpty ? (s.question ?? m.headline) : m.question
             s.headline = m.headline.isEmpty ? s.question.map { Words.clip($0, 90) } : m.headline

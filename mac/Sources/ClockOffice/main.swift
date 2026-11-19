@@ -282,6 +282,43 @@ enum Keys {
 }
 
 let arguments = CommandLine.arguments
+// Uninstalling (`./install.sh --remove` runs this first): ClockOffice's two entries in ~/.claude/settings.json are
+// taken out with the app's own switches, so the user's status line runs exactly as before. Deleting the app's folder
+// alone left the status line pointing at a relay script that was gone, and Claude Code then showed an error there
+// instead of the user's own line (T-22). The settings file is backed up beside the app's folder, in a folder a
+// removal leaves alone. Exit 1 when something could not be changed: the caller must then not delete anything.
+if arguments.contains("--remove-settings") {
+    let backups = Store.supportDirectory.deletingLastPathComponent()
+        .appendingPathComponent(Store.supportDirectory.lastPathComponent + " settings backup")
+    var failed = false
+    // Not the menu switches' "is it on": that reads as off for a relay whose script is gone, for an older build's
+    // hooks and for an unreadable file, and each of those stayed in the settings after a removal (verifier, T-22).
+    switch SettingsRemoval.look() {
+    case .unreadable:
+        print("~/.claude/settings.json: NOT changed (it cannot be opened, or is not plain JSON, so ClockOffice cannot tell whether its entries are in it)")
+        failed = true
+    case .nothing:
+        print("~/.claude/settings.json: nothing of ClockOffice's in it")
+    case let .entries(statusLine, hooks):
+        if statusLine {
+            do {
+                try StatusLineRelay.set(false, scriptDirectory: Store.supportDirectory, backups: backups)
+                print("status line: back to your own command")
+            } catch { print("status line: NOT changed (\(error.localizedDescription))"); failed = true }
+        }
+        if hooks {
+            do {
+                try ClaudeHooks.set(false, backups: backups)
+                print("hooks: ClockOffice's entries taken out")
+            } catch { print("hooks: NOT changed (\(error.localizedDescription))"); failed = true }
+        }
+        if !failed, SettingsRemoval.look() != .nothing {
+            print("~/.claude/settings.json: ClockOffice's entries are still in it after removing them"); failed = true
+        }
+    }
+    if FileManager.default.fileExists(atPath: backups.path) { print("backup of ~/.claude/settings.json: \(backups.path)") }
+    exit(failed ? 1 : 0)
+}
 if arguments.contains("--print") {
     for s in ClaudeCodeSource().sessions() + CodexSource().sessions() {
         print("\(s.state.rawValue)\t\(s.certain ? "official" : "read")\t\(s.tool)\t\(s.project)\t\(s.title)\t\(s.headline ?? "-")\t\(s.options.map(\.label))")

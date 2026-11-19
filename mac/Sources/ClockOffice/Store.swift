@@ -292,7 +292,9 @@ final class Store {
     private(set) var doorProblem: String?
 
     private func openDoor() {
-        do { try server.start() } catch { takeDoor(.failed(SnapshotServer.why(error))) }
+        // A failure is told through onDoorChange, after the door's "starting" (T-47): set here, the queued
+        // "starting" then cleared it.
+        try? server.start()
     }
 
     private func takeDoor(_ door: SnapshotServer.Door) {

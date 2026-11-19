@@ -14,8 +14,21 @@ A notification tells you that something is waiting and is gone a moment later. C
 |---|---|
 | Replying from the app | when Claude Code runs in VS Code or an editor built on it |
 | Terminal, iTerm, tmux | you see the question and jump to its window |
-| Permission prompts | shown, cannot be approved from the app yet |
+| Permission prompts | Allow and Deny from the app, once "Show the words of Claude Code dialogs" is switched on |
 | Version | 0.1.0, built on your Mac with one script, used on one Mac so far |
+
+## How it differs
+
+On 17 November 2026 I looked at four other Mac apps for Claude Code sessions. Each does part of what ClockOffice does, and each does something ClockOffice doesn't.
+
+| App | It has, ClockOffice hasn't | ClockOffice has, it hasn't |
+|---|---|---|
+| Nudge | Homebrew install; answers Codex too | one-click answers to multiple-choice questions (Nudge sends you to the terminal for those); every session in one list with its waiting time |
+| Vibe Notch | sits in the notch; a ready-built download | typed replies; every session in one list |
+| c9watch | also watches Cursor Agent and Pi; a command line; Homebrew install | answers a session (c9watch can watch, stop and open one) |
+| cc-status-bar | an Apple-notarized download; notifications | answers from the list (cc-status-bar opens the terminal) |
+
+I didn't find one that lists every waiting session with how long it has waited and lets you answer each from that list.
 
 ## What you get
 
@@ -55,13 +68,15 @@ cd clockoffice
 ./install.sh
 ```
 
-The script builds the app on your Mac, puts it in `~/Applications` and starts it. The first build takes under two minutes on my Mac. Then its icon appears in your menu bar.
+The script checks your Mac first (macOS version, Apple's command-line tools, Claude Code) and tells you what's missing. Then it builds the app, puts it in `~/Applications` and starts it, and the icon shows up in your menu bar. On my Mac the first build took under two minutes. Installing changes nothing in `~/.claude`.
+
+To take it out again, run `./install.sh --remove`. It puts `~/.claude/settings.json` back the way it was before ClockOffice, then deletes the app and everything it stored, except a backup of that settings file.
 
 There is no download to double-click. I don't sign the app with an Apple developer certificate, so macOS would stop a ready-made copy. An app you build yourself runs.
 
 To reply from the app, right-click the icon in the menu bar and choose "Set up replying in …". That installs a small extension in the editor that hosts your sessions. Without it you still see every question and jump to its window in one click.
 
-Keyboard shortcuts, the widget and how to remove everything: [mac/README.md](mac/README.md).
+Keyboard shortcuts and the widget: [mac/README.md](mac/README.md).
 
 ## What it does on your machine
 

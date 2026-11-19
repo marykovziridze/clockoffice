@@ -1181,13 +1181,14 @@ struct Prose: View {
     var body: some View {
         VStack(alignment: .leading, spacing: roomy ? 15 : 10) {
             ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, p in
-                Text(Self.styled(p, folder: folder))
+                let text = Self.styled(p, folder: folder)
+                Text(text)
                     .font(roomy ? Theme.body : Theme.small)
                     .lineSpacing(roomy ? 6 : 4)
                     .foregroundStyle(color)
                     .tint(color) // a link is the text's own colour, underlined: not a blue word in a calm page
                     .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                    .modifier(LinkWords(text: text, size: roomy ? 15 : 13, lineSpacing: roomy ? 6 : 4, color: color))
             }
         }
         .frame(maxWidth: hug ? nil : (roomy ? 680 : 600), alignment: .leading) // a line length the eye can follow
@@ -1202,11 +1203,10 @@ struct Prose: View {
 
     /// Claude writes Markdown; bold and inline code are shown as such, the rest as plain text. With a session's
     /// folder given, web addresses and files that exist become links, as in common chat apps.
-    /// Links in a conversation's text are switched off for now (2026-11-17): in the real app a click on a file or
-    /// folder link did nothing, and the cause was not found before the release. Text that looks clickable and is
-    /// not is worse than plain text, so paths and addresses show as words. Everything that makes and checks a link
-    /// (`Linker`, `link`, `tame`) is kept and tested with `links: true`.
-    static let linksOn = false
+    /// Links in a conversation's text are on again (T-23, 2026-11-18): with a trace in the installed app, the user's
+    /// real click reached the handler and opened the file. Why it did not on 2026-11-17 was not found (that
+    /// build had links off by then). A paragraph with links is drawn by AppKit, which shows a pointing hand over them (`LinkText`).
+    static let linksOn = true
 
     static func styled(_ text: String, folder: String? = nil, links: Bool = Prose.linksOn) -> AttributedString {
         let key = ((folder ?? "") + "\u{1}" + (links ? "L" : "-") + text) as NSString
@@ -1538,12 +1538,28 @@ struct CopyMessageCatcher: NSViewRepresentable {
         return (text?.selectedRange().length ?? 0) > 0
     }
 
+    /// A link under the point: then the right-click is the link's own (Copy, Open Link, Copy Link), not the
+    /// message's (verifier r3, T-23).
+    @MainActor static func link(at point: NSPoint, in window: NSWindow) -> Bool {
+        guard let content = window.contentView,
+              let text = content.hitTest(content.superview?.convert(point, from: nil) ?? point) as? NSTextView,
+              let layout = text.layoutManager, let container = text.textContainer,
+              let storage = text.textStorage, storage.length > 0 else { return false }
+        let p = text.convert(point, from: nil)
+        let inContainer = NSPoint(x: p.x - text.textContainerOrigin.x, y: p.y - text.textContainerOrigin.y)
+        let glyph = layout.glyphIndex(for: inContainer, in: container)
+        guard layout.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+            .contains(inContainer) else { return false }
+        let char = layout.characterIndexForGlyph(at: glyph)
+        return char < storage.length && storage.attribute(.link, at: char, effectiveRange: nil) != nil
+    }
+
     @MainActor private static func watch() {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown, .leftMouseDown]) { e in
             let right = e.type == .rightMouseDown || (e.type == .leftMouseDown && e.modifierFlags.contains(.control))
             guard right, let w = e.window, let m = marker(at: e.locationInWindow, in: w),
-                  !selection(at: e.locationInWindow, in: w) else { return e }
+                  !selection(at: e.locationInWindow, in: w), !link(at: e.locationInWindow, in: w) else { return e }
             NSMenu.popUpContextMenu(m.menu(), with: e, for: m)
             return nil
         }

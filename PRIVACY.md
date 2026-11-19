@@ -18,7 +18,7 @@ One thing, and only while "Summaries in plain words" is on (it is on by default)
 - `~/.clockoffice/`: a random secret shared between the app and its editor extension, and the port each editor window listens on.
 - `~/Library/Caches/ClockOffice/pictures`: copies of the pictures you pasted into a session, so the app can show them in the conversation. A picture not looked at for two weeks is cleared out.
 
-Nothing is kept anywhere else. Delete those three folders to remove everything it stored.
+Besides these, macOS keeps the app's preferences (window size, the "Summaries in plain words" setting), a web cache and the widget's data under `io.github.marykovziridze.clockoffice` in `~/Library`. To remove everything, run `./install.sh --remove`. It takes ClockOffice's entries out of `~/.claude/settings.json` (and keeps a backup of that file in `~/Library/Application Support/ClockOffice settings backup`), then deletes the app and those three folders. If you delete the folders by hand while "Show usage and model" is on, your Claude Code status line keeps pointing at a script that no longer exists.
 
 ## What it changes
 
@@ -29,7 +29,7 @@ Nothing is kept anywhere else. Delete those three folders to remove everything i
 
 ## Links in a conversation
 
-ClockOffice does not turn the text of a conversation into links: web addresses and file paths show as plain words. A picture shown under a message opens for viewing when you click it. Nothing a conversation names is ever run.
+Web addresses and file paths in a conversation are links. A file path becomes a link only when that file exists on your Mac. A click on a link opens a web page in your browser, a page, picture or document in its own app, and any other plain file in the editor the session runs in. A folder, an app or anything that could run is shown in the Finder, never opened. Nothing a conversation names is ever run.
 
 ## Network
 

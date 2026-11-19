@@ -542,7 +542,8 @@ final class Rig {
                   let e = NSEvent.mouseEvent(with: .rightMouseDown, location: p, modifierFlags: [], timestamp: 0,
                                              windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { break }
             // A message's own menu first, found as the app finds it for a real right-click.
-            if let m = CopyMessageCatcher.marker(at: p, in: window) {
+            if let m = CopyMessageCatcher.marker(at: p, in: window), !CopyMessageCatcher.selection(at: p, in: window),
+               !CopyMessageCatcher.link(at: p, in: window) {
                 var picked: String?
                 if q["pick"] == "Copy Message" { Clip.board.clearContents(); m.copyMessage(); picked = Clip.board.string(forType: .string) }
                 reply(["ok": true, "items": ["Copy Message"], "copied": picked ?? NSNull()])

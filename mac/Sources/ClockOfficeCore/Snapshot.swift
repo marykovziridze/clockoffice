@@ -218,7 +218,13 @@ public final class SnapshotServer: @unchecked Sendable {
     public func start(port: UInt16 = Snapshot.port) throws {
         lock.lock(); generation += 1; let gen = generation; lock.unlock()
         setDoor(.starting, port: port, generation: gen)
-        try listen(port: port, generation: gen, attempt: 0)
+        do { try listen(port: port, generation: gen, attempt: 0) }
+        catch {
+            // Told in order after "starting", so the menu shows the failure, not a door still starting (verifier 1
+            // of T-46: the app set the line itself, and the queued "starting" then cleared it).
+            setDoor(.failed(Self.why(error)), port: port, generation: gen)
+            throw error
+        }
     }
 
     /// Bumped by every start and stop, so a retry scheduled for an older start does nothing.
@@ -228,7 +234,11 @@ public final class SnapshotServer: @unchecked Sendable {
     /// "another app" for it was wrong 8 times in 30 (verifier 1 of T-41).
     static let busyRetries = 5
 
+    /// Tests only: the next listener cannot be set up (NWListener's own init throwing, which a real port rarely makes it do).
+    var setupFailure: Error?
+
     private func listen(port: UInt16, generation gen: Int, attempt: Int) throws {
+        if let e = setupFailure { throw e }
         let params = NWParameters.tcp
         // Bound to 127.0.0.1 itself, not to every address with a filter on top.
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!)
@@ -360,7 +370,7 @@ public final class SnapshotServer: @unchecked Sendable {
     /// A program name fit to show: letters, digits, spaces and . _ - only (lsof writes odd characters as escapes
     /// such as "\\n"), at most 32 characters; any ClockOffice edition reads "ClockOffice".
     static func cleanName(_ raw: String) -> String? {
-        let unescaped = raw.replacingOccurrences(of: #"\\(x[0-9A-Fa-f]{2}|[a-z])"#, with: " ", options: .regularExpression)
+        let unescaped = raw.replacingOccurrences(of: #"\\(\\|x[0-9A-Fa-f]{2}|[a-z])"#, with: " ", options: .regularExpression)
         let kept = String(unescaped.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || " ._-".unicodeScalars.contains($0) })
         let name = kept.split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
         if name.isEmpty { return nil }
@@ -381,7 +391,12 @@ public final class SnapshotServer: @unchecked Sendable {
 
     public func stop() {
         permissions.releaseAll()
-        lock.lock(); generation += 1; let l = listener; listener = nil; let port = doorPortValue; lock.unlock()
+        lock.lock()
+        // Already stopped: nothing to do. A second stop that bumped the generation again dropped the first one's
+        // "stopped" before it was told, and told none of its own (unchanged): the last word was "listening"
+        // (verifier 1 of T-46).
+        if listener == nil, doorState == .stopped { lock.unlock(); return }
+        generation += 1; let l = listener; listener = nil; let port = doorPortValue; lock.unlock()
         l?.cancel()
         setDoor(.stopped, port: port)
     }

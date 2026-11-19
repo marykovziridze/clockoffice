@@ -40,13 +40,15 @@ private func links(_ markdown: String) -> [String] {
     #expect(links("[the docs](https://docs.example)") == ["the docs>docs.example"])
 }
 
-@Test func aConversationsTextHasNoLinksForNow() {
-    // Switched off on 2026-11-17: a click on a file link did nothing in the real app. Until that is found and
-    // fixed, nothing in a message may look clickable.
-    #expect(!Prose.linksOn)
-    for text in ["see https://example.com/docs here", "[the docs](https://docs.example)", "open `/usr/bin/true` now", "/tmp is a folder"] {
-        let a = Prose.styled(text, folder: "/tmp")
-        #expect(a.runs.allSatisfy { $0.link == nil && $0.underlineStyle == nil }, "\(text)")
-    }
-    #expect(String(Prose.styled("[the docs](https://docs.example)").characters) == "the docs")
+@Test func aConversationsTextHasLinksAgain() {
+    // Off on 2026-11-17 (a click seemed to do nothing), on again 2026-11-18 after the user's real click in a traced
+    // build reached the handler and opened the file (T-23). Web addresses and existing files are links, underlined.
+    #expect(Prose.linksOn)
+    let web = Prose.styled("see https://example.com/docs here", folder: "/tmp")
+    #expect(web.runs.contains { $0.link != nil && $0.underlineStyle == .single })
+    let folder = Prose.styled("/tmp is a folder", folder: "/tmp")
+    #expect(folder.runs.contains { $0.link != nil })
+    // What a click may do is still decided by Linker: a program named in a message is never a link that runs it.
+    let tool = Prose.styled("open `/usr/bin/true` now", folder: "/tmp")
+    for run in tool.runs { if let url = run.link { #expect(Linker.click(Linker.outer(url) ?? url) != .edit("/usr/bin/true", line: nil)) } }
 }

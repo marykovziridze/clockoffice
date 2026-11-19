@@ -89,13 +89,16 @@ struct MarkdownMessage: View {
 
     /// Words as `Prose` draws them: same size, line spacing and colour, selectable.
     static func words(_ text: String, folder: String?, roomy: Bool, color: Color, font: Font? = nil) -> some View {
-        Text(Prose.styled(text, folder: folder))
+        let styled = Prose.styled(text, folder: folder)
+        return Text(styled)
             .font(font ?? (roomy ? Theme.body : Theme.small))
             .lineSpacing(roomy ? 6 : 4)
             .foregroundStyle(color)
             .tint(color)
             .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
+            // Words with links are drawn by AppKit, with a pointing hand over each link (T-23); all words stay
+            // selectable. Only at the body size: a heading keeps its own face, as SwiftUI text without the hand.
+            .modifier(LinkWords(text: font == nil ? styled : AttributedString(), size: roomy ? 15 : 13, lineSpacing: roomy ? 6 : 4, color: color))
     }
 
     static func headingFont(_ level: Int, roomy: Bool) -> Font {

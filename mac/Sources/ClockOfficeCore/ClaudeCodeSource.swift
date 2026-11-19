@@ -130,7 +130,10 @@ public final class ClaudeCodeSource: SessionSource, @unchecked Sendable {
                 break
             }
             let v = Classifier.classify(last)
-            if v.asks {
+            // A question Claude went on working after was answered some other way (a peer's relayed answer, T-49):
+            // no Waiting and no answer buttons for it.
+            s.movedOn = t.workedAfterText
+            if v.asks, !t.workedAfterText {
                 s.state = .asking
                 s.question = v.question
                 s.headline = v.question.map { Words.clip($0, 90) }
@@ -141,7 +144,7 @@ public final class ClaudeCodeSource: SessionSource, @unchecked Sendable {
             if let at = t.lastAssistantAt, at > s.since { s.since = at }
         }
         s.revision = [row.status, String(Int(row.changed.timeIntervalSince1970 * 1000)),
-                      last.map(Summarizer.fingerprint) ?? "-", t.userSpokeLast ? "u" : "a",
+                      last.map(Summarizer.fingerprint) ?? "-", t.userSpokeLast ? "u" : (s.movedOn ? "w" : "a"),
                       dialogAt.map { String(Int($0.timeIntervalSince1970 * 1000)) } ?? "-"].joined(separator: "|")
         return s
     }

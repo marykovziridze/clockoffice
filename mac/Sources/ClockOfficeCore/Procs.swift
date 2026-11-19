@@ -87,6 +87,17 @@ public enum Shell {
     public struct Result: Sendable { public var status: Int32; public var stdout: String; public var stderr: String }
 
     /// Runs a program and waits, with a hard timeout. Never a shell string: arguments are passed as given.
+    /// What a program wrote, gathered from two pipes' handlers (any thread).
+    private final class Collected: @unchecked Sendable {
+        private let lock = NSLock()
+        private var out = Data(), err = Data(), ended: Set<Bool> = []
+        func add(_ d: Data, _ isOut: Bool) { lock.withLock { if isOut { out.append(d) } else { err.append(d) } } }
+        func end(_ isOut: Bool, _ group: DispatchGroup) {
+            if lock.withLock({ ended.insert(isOut).inserted }) { group.leave() }
+        }
+        func both() -> (Data, Data) { lock.withLock { (out, err) } }
+    }
+
     public static func run(_ exe: String, _ args: [String], stdin: String? = nil, cwd: String? = nil,
                            env: [String: String]? = nil, timeout: TimeInterval = 20) -> Result {
         let p = Process()
@@ -96,14 +107,24 @@ public enum Shell {
         if let env { p.environment = env }
         let out = Pipe(), err = Pipe(), inp = Pipe()
         p.standardOutput = out; p.standardError = err; p.standardInput = inp
+        // Waited on through its handler: waitUntilExit added about 70 ms to almost every call (verifier 1 of T-47).
+        let exited = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in exited.signal() }
         do { try p.run() } catch { return Result(status: -1, stdout: "", stderr: "\(error)") }
         if let stdin { inp.fileHandleForWriting.write(stdin.data(using: .utf8) ?? Data()) }
         try? inp.fileHandleForWriting.close()
-        // Read on background queues so a full pipe can never block the child.
-        var outData = Data(), errData = Data()
+        // Read as the words arrive, so a full pipe can never block the child, and nothing is left waiting when a
+        // child of the program keeps the pipe open past the timeout: blocking reads then lost everything written
+        // and left two threads stuck until that child ended (verifier 1 of T-46).
+        let collected = Collected()
         let group = DispatchGroup()
-        group.enter(); DispatchQueue.global().async { outData = out.fileHandleForReading.readDataToEndOfFile(); group.leave() }
-        group.enter(); DispatchQueue.global().async { errData = err.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+        for (pipe, isOut) in [(out, true), (err, false)] {
+            group.enter()
+            pipe.fileHandleForReading.readabilityHandler = { h in
+                let d = h.availableData
+                if d.isEmpty { h.readabilityHandler = nil; collected.end(isOut, group) } else { collected.add(d, isOut) }
+            }
+        }
         let deadline = DispatchTime.now() + timeout
         if group.wait(timeout: deadline) == .timedOut {
             p.terminate()
@@ -112,7 +133,10 @@ public enum Shell {
             if group.wait(timeout: .now() + 1) == .timedOut, p.isRunning { kill(p.processIdentifier, SIGKILL) }
             _ = group.wait(timeout: .now() + 1)
         }
-        p.waitUntilExit()
+        // Not closed here: a handler may be reading at this moment; the pipe closes when the last one lets go of it.
+        for pipe in [out, err] { pipe.fileHandleForReading.readabilityHandler = nil }
+        exited.wait()
+        let (outData, errData) = collected.both()
         return Result(status: p.terminationStatus,
                       stdout: String(data: outData, encoding: .utf8) ?? "",
                       stderr: String(data: errData, encoding: .utf8) ?? "")

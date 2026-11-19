@@ -83,7 +83,19 @@ macOS decides how often a widget may refresh, so it says "as of 10:42". For the 
   dialogs") and the relay in front of your status line command ("Show usage and model").
 
 ## Remove it
-In this order, because the first step needs the app:
+From the folder you installed from:
+
+```sh
+./install.sh --remove
+```
+
+It quits the app, takes its entries out of `~/.claude/settings.json` (a backup of that file stays in
+`~/Library/Application Support/ClockOffice settings backup/`), uninstalls its extension from every VS Code-family editor
+it finds, and deletes the app and the three folders listed under "Files it keeps". If it cannot change the settings
+file, it says why and deletes nothing. Remove the desktop widget yourself if you added it, and switch off "Open at
+login" in the app's menu first if it is on.
+
+By hand, in this order, because the first step needs the app:
 1. In the app's menu (right-click the icon in the menu bar) switch off "Show usage and model" and "Show the words
    of Claude Code dialogs", and "Open at login" if it is on. That takes the app's entries out of `~/.claude/settings.json` again
    (the file is rewritten with its keys in alphabetical order); a copy from before each change is in

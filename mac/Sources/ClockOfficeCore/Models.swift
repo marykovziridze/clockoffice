@@ -48,6 +48,9 @@ public struct Session: Identifiable, Codable, Equatable, Sendable {
     /// A fingerprint of what the tool itself reported: status, when it changed, the last message, an open dialog.
     /// It does not depend on summaries, so "is this still the session the user was looking at?" has one honest answer.
     public var revision: String = ""
+    /// Claude went on working after its last words (tool calls followed): a question in them was answered some other
+    /// way (a peer's relayed answer, T-49), so neither the reading nor a summary may turn it into a question again.
+    public var movedOn: Bool = false
 
     public init(id: String, tool: String, pid: Int32, cwd: String, project: String, title: String,
                 state: SessionState, since: Date, certain: Bool = false, waitingFor: String? = nil,
